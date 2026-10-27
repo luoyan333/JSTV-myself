@@ -1,3 +1,7 @@
 *.js text eol=lf
 *.md5 text eol=lf
 *.md text eol=lf
+
+# Preserve whitespace in generated and vendored upstream license comments.
+index.js -whitespace
+vendor/*.js -whitespace

@@ -1,0 +1,5 @@
+.DS_Store
+*.db.json
+*cookie*.json
+*device*.json
+node_modules/
