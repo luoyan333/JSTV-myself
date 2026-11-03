@@ -22,6 +22,12 @@ https://raw.githubusercontent.com/luoyan333/JSTV-myself/main/index.js.md5
 - 视频分段读取、拖动进度与切集。
 - 片源不提供兼容的所选画质时明确报错，不以高画质冒充低画质。
 
+## 1.0.1 播放修复（2026-11-03）
+
+旧批量播放接口在本机实测返回 HTTP 200 空内容，导致第一集已有缓存时仍能播放、后续集数无法取址。本版将播放切换为单集 `video_model/v1/`，使用与之配套的 Gorgon / Argus / Ladon 签名和请求参数；搜索保留原 PureSign 实现。无需账号，不增加外部解析服务。
+
+已对《末世选择，从解析神明开始成神第三季》第 1、2、3、10、50、116 集，以及第一季第 1、2 集分别完成前 4 秒音视频解码。该结果仅为抽样，不代表 116 集逐集完整验收。
+
 ## 已验证范围
 
 2026-10-27，在 macOS 的 JSTV 1.17（30）中完成导入、搜索、1080P HEVC 硬件解码与实际播放验证；进度跳转和切集经使用者实测通过。另对三部剧各一集完成完整音视频解码测试。
@@ -46,6 +52,8 @@ https://raw.githubusercontent.com/luoyan333/JSTV-myself/main/index.js.md5
 
 本项目为非官方适配，与 JSTV、红果平台无关联。仓库仅包含适配代码，不托管视频内容。
 
-签名算法参考 [sunnysky123/hongguo-web](https://github.com/sunnysky123/hongguo-web)，其注释标明上游为 jackotom/hongguo-drama、woshishiq1/drpys；匿名设备注册参考 [HongguoTV-Phone-TV-NoAds](https://github.com/qq294716498/HongguoTV-Phone-TV-NoAds)；视频采样索引适配参考 [Yswag/xptv-extensions](https://github.com/Yswag/xptv-extensions/tree/jstv)。
+本版单集播放签名适配参考 [HongguoTV-Phone-TV-NoAds 的播放器签名实现](https://github.com/qq294716498/HongguoTV-Phone-TV-NoAds/blob/main/native/core/provider_hongguo_player_sign.go)，保留 GPL-3.0-or-later 声明。
+
+原搜索签名算法参考 [sunnysky123/hongguo-web](https://github.com/sunnysky123/hongguo-web)，其注释标明上游为 jackotom/hongguo-drama、woshishiq1/drpys；匿名设备注册参考 [HongguoTV-Phone-TV-NoAds](https://github.com/qq294716498/HongguoTV-Phone-TV-NoAds)；视频采样索引适配参考 [Yswag/xptv-extensions](https://github.com/Yswag/xptv-extensions/tree/jstv)。
 
 适配源代码按 GPL-3.0-or-later 提供，见 `LICENSE`。同时保留参考实现的 MIT 声明，见 `LICENSE.upstream-MIT`；各部分原有权利声明继续有效。

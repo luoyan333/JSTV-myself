@@ -1,4 +1,4 @@
-/* JSTV 红果短剧独立源 1.0.0, 2026-10-27.
+/* JSTV 红果短剧独立源 1.0.1, 2026-11-03.
  * GPL-3.0-or-later. PureSign: sunnysky123/hongguo-web, jackotom/hongguo-drama,
  * woshishiq1/drpys. Anonymous registration: qq294716498/HongguoTV-Phone-TV-NoAds.
  * CENC sample indexing adapted from Yswag/xptv-extensions.
@@ -993,10 +993,52 @@ function paramOf(query, key, fallback) {
   return fallback;
 }
 
-module.exports = { sign, branchOf };
+module.exports = { sign, branchOf, sm3 };
 
 return module.exports;})();
 'use strict';
+/* Playback request compatibility adapted from qq294716498/HongguoTV-Phone-TV-NoAds
+ * native/core/provider_hongguo_player_sign.go; GPL-3.0-or-later. */
+const PlayerSign=(()=>{
+ const mask=(1n<<64n)-1n,rot=(x,n)=>{n=(n+64)%64;return ((x<<BigInt(n))|(x>>BigInt(64-n)))&mask};
+ const md5=x=>crypto.createHash('md5').update(x).digest(),sm3=x=>PureSign.sm3(x);
+ const pad=x=>{const n=16-x.length%16;return Buffer.concat([x,Buffer.alloc(n,n)])};
+ const vi=n=>{n=BigInt(n);const a=[];while(n>127n){a.push(Number(n&127n)|128);n>>=7n}a.push(Number(n));return Buffer.from(a)};
+ const field=(n,v)=>Buffer.concat([vi(n*8),vi(v)]),bytes=(n,v)=>{v=Buffer.isBuffer(v)?v:Buffer.from(v);return Buffer.concat([vi(n*8+2),vi(v.length),v])};
+ function argus(query,body,ts,device,nonce){
+  const key=Buffer.from('ac1adaae95a7af94a5114ab3b3a97dd80050aa0a39314c40528caec95256c28c','hex');
+  const bh=sm3(body?md5(body):Buffer.alloc(16)),qh=sm3(Buffer.from(query));
+  const counters=Buffer.concat([field(1,1),field(2,1),field(3,1),field(7,3348294860)]);
+  const env=Buffer.concat([bytes(1,'25053RT47C'),bytes(2,'16'),bytes(3,'update_64'),field(4,2147483648)]);
+  const msg=Buffer.concat([field(1,0x20200929*2),field(2,2),field(3,nonce.readUInt32LE(6)&0x7fffffff),bytes(4,'8662'),bytes(5,device),bytes(6,'1611921764'),bytes(7,'7.3.5.32'),bytes(8,'v04.07.01-ml-android'),field(9,135135744),bytes(10,Buffer.alloc(8)),field(11,0),field(12,BigInt(ts)*2n),bytes(13,bh.subarray(0,6)),bytes(14,qh.subarray(0,6)),bytes(15,counters),bytes(16,''),bytes(20,'none'),field(21,738),bytes(23,env),field(25,2)]);
+  const data=pad(msg),derived=sm3(Buffer.concat([key,Buffer.from([0x3c,0xcc,0x56,0x7b]),key])),rounds=[];
+  for(let i=0;i<4;i++)rounds.push(derived.readBigUInt64LE(i*8));
+  for(let i=4;i<72;i++){let mixed=rot(rounds[i-1],-3)^rounds[i-3];mixed^=rot(mixed,-1);rounds.push(((~rounds[i-4])^mixed^((0x3dc94c3a046d678bn>>BigInt((i-4)%62))&1n)^3n)&mask)}
+  for(let off=0;off<data.length;off+=16){let l=data.readBigUInt64LE(off),r=data.readBigUInt64LE(off+8);for(const k of rounds)[l,r]=[r,(l^(rot(r,1)&rot(r,8))^rot(r,2)^k)&mask];data.writeBigUInt64LE(l,off);data.writeBigUInt64LE(r,off+8)}
+  const xor=Buffer.from([0xd0,0x4f,0xfd,0xff,0xd0,0x4f,0xfd,0xff]);for(let i=0;i<data.length;i++)data[i]^=xor[i%8];
+  const rev=Buffer.concat([xor,data]).reverse(),container=pad(Buffer.concat([Buffer.from([0xa6,0xe7,0x83,0xee,0x70,0x01,0x10,0x09,0x18]),rev,Buffer.from([0x56,0x7b])]));
+  const aes=crypto.createCipheriv('aes-128-cbc',md5(key.subarray(0,16)),md5(key.subarray(16)));aes.setAutoPadding(false);
+  return Buffer.concat([Buffer.from([0x3c,0xcc]),aes.update(container),aes.final()]).toString('base64');
+ }
+ function ladon(aid,ts,prefix){
+  const digest=Buffer.from(md5(Buffer.concat([prefix,Buffer.from(aid)])).toString('hex'));
+  let l=digest.readBigUInt64LE(0),r=digest.readBigUInt64LE(8),queue=[digest.readBigUInt64LE(16),digest.readBigUInt64LE(24)],keys=[];
+  for(let i=0;i<34;i++){keys.push(l);const mix=((rot(r,-8)+l)&mask)^BigInt(i);queue.push(mix);l=(mix^rot(l,3))&mask;r=queue.shift()}
+  const data=pad(Buffer.from(String(ts)+'-1611921764-'+aid));
+  for(let off=0;off<data.length;off+=16){l=data.readBigUInt64LE(off);r=data.readBigUInt64LE(off+8);for(const k of keys){r=(k^((l+rot(r,-8))&mask))&mask;l=(r^rot(l,3))&mask}data.writeBigUInt64LE(l,off);data.writeBigUInt64LE(r,off+8)}
+  return Buffer.concat([prefix,data]).toString('base64');
+ }
+ function sign(url,body,ts){
+  const u=new URL(url),query=u.search.slice(1),p=Buffer.alloc(20);md5(Buffer.from(query)).copy(p,0,0,4);if(body)md5(body).copy(p,4,0,4);Buffer.from([0,6,11,28]).copy(p,12);p.writeUInt32BE(ts,16);
+  const key=Buffer.from('44b9b9d9a4aef9fca493aa757ca3c2c4a496938f','hex');for(let i=0;i<20;i++)p[i]^=key[i];
+  const rev=x=>{let n=0;for(let j=0;j<8;j++)n=(n<<1)|((x>>j)&1);return n};
+  for(let i=0;i<20;i++){const x=(((p[i]<<4)|(p[i]>>4))&255)^p[(i+1)%20];p[i]=rev(x)^255^20}
+  const nonce=crypto.randomBytes(11);
+  return {'X-Khronos':String(ts),'X-Gorgon':Buffer.concat([Buffer.from([0x84,4,0x40,0x1c,0,0]),p]).toString('hex'),'X-Argus':argus(query,body,ts,u.searchParams.get('device_id')||'',nonce),'X-Ladon':ladon(u.searchParams.get('aid')||'8662',ts,nonce.subarray(2,6))};
+ }
+ return {sign};
+})();
+
 const REG_CONSTANTS=Buffer.from([77,212,194,230,184,49,98,9,14,82,179,199,166,115,59,164,28,178,70,43,130,154,181,138,25,107,57,219,87,23,117,36,244,155,175,127,8,232,214,141,38,167,46,55,193,169,90,47,31,5,165,24,146,174,242,148,151,50,182,42,56,170,221,88]);
 async function registerAnonymous(){
  const id=()=>crypto.randomBytes(16).toString('hex'),now=Date.now();
@@ -1039,7 +1081,7 @@ async function api(path,payload,extra={}){
  const qs=new URLSearchParams({aid:'8662',app_name:'novelread',version_code:'73532',version_name:'7.3.5.32',manifest_version_code:'73532',update_version_code:'73532',channel:'update_64',device_platform:'android',os:'android',ssmix:'a',device_type:'25053RT47C',device_brand:'Redmi',language:'zh',os_api:'36',os_version:'16',resolution:'1280*2772',dpi:'520',ac:'wifi',device_id:dev.device_id,iid:dev.install_id,...extra});qs.sort();
  const ts=Math.floor(Date.now()/1000);qs.set('_rticket',String(Date.now()));let url;
  for(let n=0;n<24;n++){url='https://api5-normal-sinfonlineb.fqnovel.com'+path+'?'+qs; if(PureSign.branchOf(url,body,ts)!==1)break;qs.set('_rticket',String(Number(qs.get('_rticket'))+1))}
- const headers={'User-Agent':APP_UA,Accept:'application/json','Content-Type':'application/json; charset=utf-8','X-XS-From-Web':'0','Sdk-Version':'2','X-SS-Req-Ticket':String(Date.now()),...(body?{'X-SS-STUB':crypto.createHash('md5').update(body).digest('hex').toUpperCase()}:{}),...PureSign.sign(url,body,ts)};
+ const headers={'User-Agent':APP_UA,Accept:'application/json','Content-Type':'application/json; charset=utf-8','X-XS-From-Web':'0','Sdk-Version':'2','X-SS-Req-Ticket':String(Date.now()),...(body?{'X-SS-STUB':crypto.createHash('md5').update(body).digest('hex').toUpperCase()}:{}),...(path==='/novel/player/video_model/v1/'?PlayerSign.sign(url,body,ts):PureSign.sign(url,body,ts))};
  for(let n=0;n<3;n++){const r=await request(url,{method:body?'POST':'GET',headers,body,timeout:12000});if(r.status!==200)throw Error('播放接口 HTTP '+r.status);if(r.data.length){const x=parseJSON(r.data.toString());if(Number(x.code||x.Code||0)!==0)throw Error('播放接口业务错误 '+(x.code||x.Code));return x}if(n<2)await new Promise(r=>setTimeout(r,300*(n+1)))}
  throw Error('播放接口返回空内容，请稍后重试');
 }
@@ -1072,8 +1114,8 @@ async function detail(body){const id=String(body.id||'');if(!/^\d{10,24}$/.test(
 function contentKey(spade){const raw=Buffer.from(spade||'','base64');if(raw.length<3)throw Error('媒体密钥格式无效');const tag=(raw[0]^raw[1]^raw[2])-48,n=raw.length-tag-1;if(tag<1||n<33||n>=raw.length)throw Error('媒体密钥结构无效');const out=Buffer.alloc(n);let even=250,odd=85;for(let i=0;i<n;i++){const cur=raw[i+1],prev=i%2?odd:even;if(i%2)odd=cur;else even=cur;let x=i,count=0;for(;x;x>>>=1)count+=x&1;out[i]=((prev^cur)-21-count)&255}if(!/^[0-9a-fA-F]{32}$/.test(out.subarray(1,33).toString()))throw Error('媒体密钥版本不支持');return Buffer.from(out.subarray(1,33).toString(),'hex')}
 function mediaAddress(v){let s=String(v||'').trim();if(!/^https?:\/\//.test(s))s=Buffer.from(s,'base64').toString();if(!/^https?:\/\//.test(s))return '';return s}
 async function resolveMedia(vid,quality){
- const result=await api('/novel/player/multi_video_model/v1/',{biz_param:{detail_page_version:0,device_level:3,disable_digg_stat:false,need_all_video_definition:true,need_mp4_align:false,use_os_player:false,use_server_dns:false,video_platform:1024},mixed_video_id_map:{1004:[vid]}});
- const e=result.data?.[vid]||{},model=typeof e.video_model==='string'?JSON.parse(e.video_model):e.video_model;if(!model)throw Error('未返回播放模型');
+ const result=await api('/novel/player/video_model/v1/',{video_id:vid,content_type:1,biz_param:{need_all_video_definition:true,video_platform:3}});
+ const e=result.data||{},raw=e.video_model;let model=raw;if(typeof raw==='string'){try{model=JSON.parse(raw)}catch(err){model=JSON.parse(Buffer.from(raw,'base64').toString())}}if(!model&&e.video_list)model=e;if(!model)throw Error('未返回播放模型');
  let rows=Object.values(model.video_list||{}).map(v=>{const m=v.video_meta||{},enc=v.encrypt_info||{};return {url:mediaAddress(v.main_url)||mediaAddress(v.backup_url),spade:enc.spade_a||'',encrypted:!!enc.encrypt,codec:String(m.codec_type||'').toLowerCase(),quality:parseInt(m.definition)||Math.min(m.vwidth||99999,m.vheight||99999)}}).filter(v=>v.url&&!['bytevc2','bvc2'].includes(v.codec));
  rows.sort((a,b)=>b.quality-a.quality);if(quality)rows=rows.filter(v=>v.quality<=quality);if(!rows.length)throw Error('本集没有兼容的所选画质');const selected=rows[0];if(selected.encrypted&&!selected.spade)throw Error('未返回媒体密钥');return {...selected,key:selected.spade?contentKey(selected.spade):null};
 }
@@ -1088,7 +1130,7 @@ function transform(item,start,data){const out=Buffer.from(data),end=start+out.le
 async function serveVideo(req,res,id){const item=[...mediaCache.values()].find(x=>x.id===id);if(!item){res.writeHead(410);res.end();return}let start=0,end=item.total-1;const header=req.headers.range;if(header){const m=header.match(/^bytes=(\d*)-(\d*)$/);if(!m){res.writeHead(416,{'Content-Range':'bytes */'+item.total});res.end();return}if(!m[1]){start=Math.max(0,item.total-Number(m[2]));}else {start=Number(m[1]);if(m[2])end=Math.min(end,Number(m[2]));}if(!Number.isSafeInteger(start)||start<0||start>end||start>=item.total){res.writeHead(416,{'Content-Range':'bytes */'+item.total});res.end();return}}const headers={'Content-Type':'video/mp4','Content-Length':end-start+1,'Accept-Ranges':'bytes','Cache-Control':'no-store'};if(header)headers['Content-Range']='bytes '+start+'-'+end+'/'+item.total;res.writeHead(header?206:200,headers);if(req.method==='HEAD'){res.end();return}const controller=new AbortController();res.once('close',()=>controller.abort());try{for(let pos=start;pos<=end&&!res.destroyed;){const last=Math.min(end,pos+512*1024-1);let buf;if(last<item.head.length)buf=item.head.subarray(pos,last+1);else buf=transform(item,pos,(await range(item.url,pos,last,controller.signal)).data);if(!res.write(buf))await new Promise(resolve=>{const done=()=>{res.removeListener('drain',done);res.removeListener('close',done);resolve()};res.once('drain',done);res.once('close',done)});pos=last+1}if(!res.destroyed)res.end()}catch(e){if(!res.destroyed)res.destroy()}}
 function send(res,data,status=200){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data))}
 function config(){return {video:{sites:[{key:'nodejs_hongguo_local',name:'红果短剧·独立版',type:3,api:PREFIX,searchable:1,quickSearch:1,filterable:1}]},read:{sites:[]},comic:{sites:[]},music:{sites:[]},pan:{sites:[]},color:[]}}
-async function handler(req,res){try{const path=new URL(req.url,'http://127.0.0.1').pathname;if(req.method==='OPTIONS'){res.writeHead(204);res.end();return}if(path==='/config'||path==='/full-config')return send(res,config());if(path==='/check')return send(res,{run:true});if(path==='/website'||path==='/website/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<!doctype html><meta charset="utf-8"><title>红果短剧独立源</title><h1>红果短剧·独立版</h1><p>1.0.0 · 2026-10-27</p><p>无需账号登录。匿名设备身份与临时播放信息只留在内存中。</p><p>在 JSTV「我的扩展」选择本源即可搜索和观看。</p>');return}const video=path.match(new RegExp('^'+PREFIX+'/video/([a-f0-9]{24})\\.mp4$'));if(video&&['GET','HEAD'].includes(req.method))return await serveVideo(req,res,video[1]);if(req.method!=='POST'||!path.startsWith(PREFIX+'/'))return send(res,{error:'Not Found'},404);const chunks=[];let size=0;for await(const b of req){size+=b.length;if(size>65536)return send(res,{error:'请求过大'},413);chunks.push(b)}const body=parseJSON(Buffer.concat(chunks).toString()||'{}'),action=path.slice(PREFIX.length+1),actions={init:async()=>({}),home,category,search,detail,play};if(!actions[action])return send(res,{error:'Not Found'},404);send(res,await actions[action](body))}catch(e){if(!res.headersSent)send(res,{error:String(e.message||'源请求失败'),message:String(e.message||'源请求失败'),list:[]},502);else res.destroy()}}
+async function handler(req,res){try{const path=new URL(req.url,'http://127.0.0.1').pathname;if(req.method==='OPTIONS'){res.writeHead(204);res.end();return}if(path==='/config'||path==='/full-config')return send(res,config());if(path==='/check')return send(res,{run:true});if(path==='/website'||path==='/website/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<!doctype html><meta charset="utf-8"><title>红果短剧独立源</title><h1>红果短剧·独立版</h1><p>1.0.1 · 2026-11-03</p><p>无需账号登录。匿名设备身份与临时播放信息只留在内存中。</p><p>在 JSTV「我的扩展」选择本源即可搜索和观看。</p>');return}const video=path.match(new RegExp('^'+PREFIX+'/video/([a-f0-9]{24})\\.mp4$'));if(video&&['GET','HEAD'].includes(req.method))return await serveVideo(req,res,video[1]);if(req.method!=='POST'||!path.startsWith(PREFIX+'/'))return send(res,{error:'Not Found'},404);const chunks=[];let size=0;for await(const b of req){size+=b.length;if(size>65536)return send(res,{error:'请求过大'},413);chunks.push(b)}const body=parseJSON(Buffer.concat(chunks).toString()||'{}'),action=path.slice(PREFIX.length+1),actions={init:async()=>({}),home,category,search,detail,play};if(!actions[action])return send(res,{error:'Not Found'},404);send(res,await actions[action](body))}catch(e){if(!res.headersSent)send(res,{error:String(e.message||'源请求失败'),message:String(e.message||'源请求失败'),list:[]},502);else res.destroy()}}
 async function start(options={}){if(server)await stop();server=typeof globalThis.catServerFactory==='function'?globalThis.catServerFactory(handler):http.createServer(handler);const port=Number(options.port)||9988;await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve)});return server}
 async function stop(){if(server){const old=server;server=null;if(typeof old.closeAllConnections==='function')old.closeAllConnections();await new Promise(r=>old.close(r))}agent.destroy();mediaCache.clear();pageCache.clear();searchCursors.clear();identityPromise=null}
 module.exports={start,stop,getServer:()=>server};
