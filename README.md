@@ -22,7 +22,18 @@ https://raw.githubusercontent.com/luoyan333/JSTV-myself/main/index.js.md5
 - 视频分段读取、拖动进度与切集。
 - 片源不提供兼容的所选画质时明确报错，不以高画质冒充低画质。
 
-## 1.0.4 播放取流修复（2026-11-16）
+## 1.0.5 编码兼容修复（2026-11-16）
+
+部分分集虽有完整播放模型，但全部直链均为 JSTV 不支持的 ByteVC2；1.0.4 直接过滤后误报“没有兼容资源”。本版在这种情况下向平台返回的官方媒体信息接口声明 HEVC／H.264 解码能力，取消仅限 ByteVC2 文件的选择条件，取得同一分集的兼容版本。继续使用匿名取流，不需要另外安装播放器或转码服务。
+
+- 保留原本可用的 HEVC／H.264 直链。自动档采用最高兼容画质；原生 1080P 不兼容而仅有 720P 兼容资源时使用 720P，固定 720P／480P 仍遵守画质上限。
+- 支持官方备用媒体信息中的受保护地址格式；核对返回的视频身份，拒绝错集、业务拒绝和限流。不读取既有账号资料，不保存匿名身份、媒体密钥和临时地址。
+- 本次验证：第39、40集三档画质在起点和30秒处共12项音视频解码通过；第39、351、4、5集及《觉醒伪神》第8季第2集、《末世选择》第3季第2集共6集完成全片音视频解码。3次全新会话各核验第39集480P和第351集自动档，均取流、媒体准备通过。
+- 《我合成了全世界啊第3季》351集逐集取流、媒体头和前1秒音视频解码：351/351通过。这不等同于351集逐集全片观看；其他作品为上述抽测范围。JSTV 实机验收待完成。
+
+媒体地址解码参考 [jycao2/hongguoTV](https://github.com/jycao2/hongguoTV/blob/main/kotlin-tv/core/src/main/kotlin/com/hongguotv/core/MediaCrypto.kt)。
+
+## 1.0.4 取流恢复记录（历史，后续集问题已由1.0.5修复）
 
 旧 `POST /novel/player/video_model/v1/` 在本机实测持续返回空正文。本版改用当前 `GET /reading/bookapi/video_tab/multi_video_model/v1/`，按本集 ID 读取 `video_model_data`；保留配套播放签名，校准请求时间戳。
 
@@ -33,7 +44,7 @@ https://raw.githubusercontent.com/luoyan333/JSTV-myself/main/index.js.md5
 
 Mac JSTV 1.17 实机：已更新 1.0.4，《我合成了全世界啊第3季》第 4 集从原进度恢复播放、切至第 5 集正常播放约 17 秒，均显示 1080P / HEVC 硬解。
 
-本次音视频解码抽测：《我合成了全世界啊第3季》第 4、5 集，以及《觉醒伪神：神明弃我我自为神8》第 2 集的前 5 秒通过。《我合成了全世界啊第3季》第 351 集和《末世选择，从解析神明开始成神第三季》第 2 集仍出现空正文或无兼容资源，保留为未恢复项；不作所有分集均可播放的承诺。
+本次音视频解码抽测：《我合成了全世界啊第3季》第 4、5 集，以及《觉醒伪神：神明弃我我自为神8》第 2 集的前 5 秒通过。《我合成了全世界啊第3季》第 351 集和《末世选择，从解析神明开始成神第三季》第 2 集当时出现空正文或无兼容资源；不作所有分集均可播放的承诺。
 
 接口适配参考 [jycao2/hongguoTV 的取流实现](https://github.com/jycao2/hongguoTV/blob/main/kotlin-tv/core/src/main/kotlin/com/hongguotv/core/ContentRepository.kt) 及 [dddmiku/hongguo-tv](https://github.com/dddmiku/hongguo-tv/blob/main/app/src/main/java/cn/hongguo/tv/api/Api.java)。
 

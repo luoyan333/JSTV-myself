@@ -1,7 +1,8 @@
-/* JSTV 红果短剧独立源 1.0.4, 2026-11-16.
+/* JSTV 红果短剧独立源 1.0.5, 2026-11-16.
  * GPL-3.0-or-later. PureSign: sunnysky123/hongguo-web, jackotom/hongguo-drama,
  * woshishiq1/drpys. Anonymous registration: qq294716498/HongguoTV-Phone-TV-NoAds.
  * CENC sample indexing adapted from Yswag/xptv-extensions.
+ * Media URL decoding adapted from jycao2/hongguoTV (GPL-3.0).
  * No account login, user cookies, configuration reads or persistent secrets.
  */
 'use strict';
@@ -1198,6 +1199,55 @@ async function search(body){
 async function detail(body){const id=String(body.id||'');if(!/^\d{10,24}$/.test(id))throw Error('剧集编号无效');const data=await page('/detail?series_id='+id),v=data.detail_page?.seriesDetail||Object.values(data).find(x=>x?.seriesDetail)?.seriesDetail;if(!v)throw Error('官网未返回剧集详情');const vids=(v.vid_list||[]).map(String).filter(x=>/^\d{10,24}$/.test(x));if(!vids.length)throw Error('官网未返回分集');return {list:[{...card(v),vod_id:id,type_name:(v.tags||[]).join(' / '),vod_content:String(v.series_intro||''),vod_remarks:'全'+vids.length+'集',vod_play_from:'自动 · 最高1080P$$$720P$$$480P',vod_play_url:[0,720,480].map(q=>vids.map((vid,i)=>'第'+(i+1)+'集$'+id+':'+vid+'|'+q).join('#')).join('$$$')}]}}
 function contentKey(spade){const raw=Buffer.from(spade||'','base64');if(raw.length<3)throw Error('媒体密钥格式无效');const tag=(raw[0]^raw[1]^raw[2])-48,n=raw.length-tag-1;if(tag<1||n<33||n>=raw.length)throw Error('媒体密钥结构无效');const out=Buffer.alloc(n);let even=250,odd=85;for(let i=0;i<n;i++){const cur=raw[i+1],prev=i%2?odd:even;if(i%2)odd=cur;else even=cur;let x=i,count=0;for(;x;x>>>=1)count+=x&1;out[i]=((prev^cur)-21-count)&255}if(!/^[0-9a-fA-F]{32}$/.test(out.subarray(1,33).toString()))throw Error('媒体密钥版本不支持');return Buffer.from(out.subarray(1,33).toString(),'hex')}
 function mediaAddress(v){let s=String(v||'').trim();if(!/^https?:\/\//.test(s))s=Buffer.from(s,'base64').toString();if(!/^https?:\/\//.test(s))return '';return s}
+function decodedMediaAddress(value,seed){
+ const direct=mediaAddress(value);if(direct)return direct;
+ if(!seed||!value)return '';
+ try{
+  const raw=Buffer.from(String(value),'base64'),s=Buffer.from(String(seed),'base64');
+  if(raw.length<20||raw[0]!==0xa8||raw[2]!==1||raw[3]!==0)return '';
+  const sha=x=>crypto.createHash('sha512').update(x).digest(),h=sha(Buffer.concat([sha(s),REG_CONSTANTS]));
+  const cipher=crypto.createDecipheriv('aes-128-cbc',h.subarray(0,16),h.subarray(16,32));cipher.setAutoPadding(false);
+  let data=Buffer.concat([cipher.update(raw.subarray(4,4+Math.floor((raw.length-4)/16)*16)),cipher.final()]);
+  const n=data[data.length-1];if(n>=1&&n<=16&&data.subarray(-n).every(x=>x===n))data=data.subarray(0,-n);
+  while(data.length&&data[data.length-1]===0)data=data.subarray(0,-1);
+  return mediaAddress(data.toString('utf8'));
+ }catch(e){return ''}
+}
+function compatibleMediaVariants(data){
+ return Object.values(data?.video_list||{}).map(v=>{
+  const meta=v.video_meta||{},enc=v.encrypt_info||{},spade=enc.spade_a||v.spade_a||'';
+  const codec=String(meta.codec_type||v.codec_type||'').toLowerCase();
+  const named=parseInt(meta.definition||v.definition||v.quality_desc||v.quality);
+  const width=Number(meta.vwidth||v.vwidth||v.width),height=Number(meta.vheight||v.vheight||v.height);
+  const quality=named||Math.min(width||Infinity,height||Infinity);
+  return {url:decodedMediaAddress(v.main_url,data.key_seed)||decodedMediaAddress(v.backup_url||v.backup_url_1,data.key_seed),spade,encrypted:!!enc.encrypt||!!spade,codec,quality:Number.isFinite(quality)?quality:0};
+ }).filter(v=>v.url&&!['bytevc2','bvc2'].includes(v.codec));
+}
+async function modelMediaVariants(model,deadline,quality=0){
+ const direct=compatibleMediaVariants(model);if(direct.some(v=>!quality||v.quality<=quality))return direct;
+ let fallback=model.fallback_api;
+ if(typeof fallback==='string'&&fallback.trim().startsWith('{')){try{fallback=parseJSON(fallback).fallback_api}catch(e){fallback=''}}
+ if(fallback&&typeof fallback==='object')fallback=Array.isArray(fallback)?fallback[0]:fallback.fallback_api;
+ if(typeof fallback!=='string'||!fallback.startsWith('https://'))return [];
+ const original=new URL(fallback);
+ if(!['snssdk.com','fqnovel.com','bytedance.com','bytecdn.cn','volcvideo.com'].some(host=>original.hostname===host||original.hostname.endsWith('.'+host)))throw Error('媒体信息地址不受支持');
+ // Negotiate decoder capabilities on the official media endpoint. Keep its
+ // issued authorization and video ID; do not force a ByteVC2-only file set.
+ for(const codec of ['1','0']){
+  if(Date.now()>=deadline)break;
+  const u=new URL(original.href);u.searchParams.set('codec_type',codec);u.searchParams.delete('force_fids');u.searchParams.delete('encode_user_tag');
+  const r=await request(u.href,{headers:{'User-Agent':APP_UA,Referer:'https://novel.snssdk.com/'},timeout:Math.max(1,Math.min(5000,deadline-Date.now()))});
+  if(r.status!==200)throw Error('媒体信息接口 HTTP '+r.status);
+  const response=parseJSON(r.data.toString()),code=Number(response.code??response.Code??0);
+  if(code!==0)throw Error('媒体信息接口业务错误 '+code);
+  const info=response.video_info?.data;
+  if(!info)continue;
+  if(model.video_id&&info.video_id&&String(model.video_id)!==String(info.video_id))throw Error('媒体信息与本集不匹配');
+  const rows=compatibleMediaVariants(info);if(rows.some(v=>!quality||v.quality<=quality))return rows;
+ }
+ return [];
+}
+
 async function resolveMediaAttempt(vid,quality,deadline=Date.now()+22000){
  const params={video_id:vid,video_id_type:'0',need_all_video_definition:'1',need_mp4_align:'0',use_os_player:'0',video_platform:'1024',source:'0',from_video_id:''};
  const plans=[['api5-normal-sinfonlineb.fqnovel.com','1'],['reading.snssdk.com','1'],['api5-normal-sinfonlineb.fqnovel.com','3'],['reading.snssdk.com','3'],['api5-normal-sinfonlineb.fqnovel.com','1',true],['reading.snssdk.com','1',true]];
@@ -1209,7 +1259,7 @@ async function resolveMediaAttempt(vid,quality,deadline=Date.now()+22000){
    const result=await api(path,null,extra,host,{timeout:Math.max(1,Math.min(5000,deadline-Date.now()))}),data=result.data||{},entry=data.video_model_data?.[vid]||data[vid]||data,raw=entry.video_model;
    let model=raw;if(typeof raw==='string'){try{model=JSON.parse(raw)}catch(e){model=JSON.parse(Buffer.from(raw,'base64').toString())}}if(!model&&entry.video_list)model=entry;
    if(!model||!Object.keys(model.video_list||{}).length)throw Error('播放接口未返回本集可用视频');
-   let rows=Object.values(model.video_list||{}).map(v=>{const m=v.video_meta||{},enc=v.encrypt_info||{};return {url:mediaAddress(v.main_url)||mediaAddress(v.backup_url),spade:enc.spade_a||'',encrypted:!!enc.encrypt,codec:String(m.codec_type||'').toLowerCase(),quality:parseInt(m.definition)||Math.min(m.vwidth||99999,m.vheight||99999)}}).filter(v=>v.url&&!['bytevc2','bvc2'].includes(v.codec));
+   let rows=await modelMediaVariants(model,deadline,quality);
    rows.sort((a,b)=>b.quality-a.quality);if(quality)rows=rows.filter(v=>v.quality<=quality);
    if(!rows.length)throw Error('本集暂未返回兼容的所选画质');
    const selected=rows[0];if(selected.encrypted&&!selected.spade)throw Error('未返回媒体密钥');
@@ -1243,7 +1293,7 @@ function transform(item,start,data){const out=Buffer.from(data),end=start+out.le
 async function serveVideo(req,res,id){const item=[...mediaCache.values()].find(x=>x.id===id);if(!item){res.writeHead(410);res.end();return}let start=0,end=item.total-1;const header=req.headers.range;if(header){const m=header.match(/^bytes=(\d*)-(\d*)$/);if(!m){res.writeHead(416,{'Content-Range':'bytes */'+item.total});res.end();return}if(!m[1]){start=Math.max(0,item.total-Number(m[2]));}else {start=Number(m[1]);if(m[2])end=Math.min(end,Number(m[2]));}if(!Number.isSafeInteger(start)||start<0||start>end||start>=item.total){res.writeHead(416,{'Content-Range':'bytes */'+item.total});res.end();return}}const headers={'Content-Type':'video/mp4','Content-Length':end-start+1,'Accept-Ranges':'bytes','Cache-Control':'no-store'};if(header)headers['Content-Range']='bytes '+start+'-'+end+'/'+item.total;res.writeHead(header?206:200,headers);if(req.method==='HEAD'){res.end();return}const controller=new AbortController();res.once('close',()=>controller.abort());try{for(let pos=start;pos<=end&&!res.destroyed;){const last=Math.min(end,pos+512*1024-1);let buf;if(last<item.head.length)buf=item.head.subarray(pos,last+1);else buf=transform(item,pos,(await range(item.url,pos,last,controller.signal)).data);if(!res.write(buf))await new Promise(resolve=>{const done=()=>{res.removeListener('drain',done);res.removeListener('close',done);resolve()};res.once('drain',done);res.once('close',done)});pos=last+1}if(!res.destroyed)res.end()}catch(e){if(!res.destroyed)res.destroy()}}
 function send(res,data,status=200){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data))}
 function config(){return {video:{sites:[{key:'nodejs_hongguo_local',name:'红果短剧·独立版',type:3,api:PREFIX,searchable:1,quickSearch:1,filterable:1}]},read:{sites:[]},comic:{sites:[]},music:{sites:[]},pan:{sites:[]},color:[]}}
-async function handler(req,res){try{const path=new URL(req.url,'http://127.0.0.1').pathname;if(req.method==='OPTIONS'){res.writeHead(204);res.end();return}if(path==='/config'||path==='/full-config')return send(res,config());if(path==='/check')return send(res,{run:true});if(path==='/website'||path==='/website/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<!doctype html><meta charset="utf-8"><title>红果短剧独立源</title><h1>红果短剧·独立版</h1><p>1.0.4 · 2026-11-16</p><p>无需账号登录。匿名设备身份与临时播放信息只留在内存中。</p><p>在 JSTV「我的扩展」选择本源即可搜索和观看。</p>');return}const video=path.match(new RegExp('^'+PREFIX+'/video/([a-f0-9]{24})\\.mp4$'));if(video&&['GET','HEAD'].includes(req.method))return await serveVideo(req,res,video[1]);if(req.method!=='POST'||!path.startsWith(PREFIX+'/'))return send(res,{error:'Not Found'},404);const chunks=[];let size=0;for await(const b of req){size+=b.length;if(size>65536)return send(res,{error:'请求过大'},413);chunks.push(b)}const body=parseJSON(Buffer.concat(chunks).toString()||'{}'),action=path.slice(PREFIX.length+1),actions={init:async()=>({}),home,category,search,detail,play};if(!actions[action])return send(res,{error:'Not Found'},404);send(res,await actions[action](body))}catch(e){if(!res.headersSent)send(res,{error:String(e.message||'源请求失败'),message:String(e.message||'源请求失败'),list:[]},502);else res.destroy()}}
+async function handler(req,res){try{const path=new URL(req.url,'http://127.0.0.1').pathname;if(req.method==='OPTIONS'){res.writeHead(204);res.end();return}if(path==='/config'||path==='/full-config')return send(res,config());if(path==='/check')return send(res,{run:true});if(path==='/website'||path==='/website/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<!doctype html><meta charset="utf-8"><title>红果短剧独立源</title><h1>红果短剧·独立版</h1><p>1.0.5 · 2026-11-16</p><p>无需账号登录。匿名设备身份与临时播放信息只留在内存中。</p><p>在 JSTV「我的扩展」选择本源即可搜索和观看。</p>');return}const video=path.match(new RegExp('^'+PREFIX+'/video/([a-f0-9]{24})\\.mp4$'));if(video&&['GET','HEAD'].includes(req.method))return await serveVideo(req,res,video[1]);if(req.method!=='POST'||!path.startsWith(PREFIX+'/'))return send(res,{error:'Not Found'},404);const chunks=[];let size=0;for await(const b of req){size+=b.length;if(size>65536)return send(res,{error:'请求过大'},413);chunks.push(b)}const body=parseJSON(Buffer.concat(chunks).toString()||'{}'),action=path.slice(PREFIX.length+1),actions={init:async()=>({}),home,category,search,detail,play};if(!actions[action])return send(res,{error:'Not Found'},404);send(res,await actions[action](body))}catch(e){if(!res.headersSent)send(res,{error:String(e.message||'源请求失败'),message:String(e.message||'源请求失败'),list:[]},502);else res.destroy()}}
 async function start(options={}){if(server)await stop();server=typeof globalThis.catServerFactory==='function'?globalThis.catServerFactory(handler):http.createServer(handler);const port=Number(options.port)||9988;await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve)});return server}
 async function stop(){if(server){const old=server;server=null;if(typeof old.closeAllConnections==='function')old.closeAllConnections();await new Promise(r=>old.close(r))}agent.destroy();mediaCache.clear();pageCache.clear();searchCursors.clear();identityPromise=null;identityRecoveryAt=0}
 module.exports={start,stop,getServer:()=>server};
