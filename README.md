@@ -31,7 +31,9 @@ https://raw.githubusercontent.com/luoyan333/JSTV-myself/main/index.js.md5
 - 继续排除不支持的 ByteVC2 视频；未取得兼容资源时明确报错，不伪装为可播或其他画质。
 - 搜索、分集和本地媒体代理沿用原功能，兼容 JSTV 内置无 ICU 的 NodeMobile。
 
-本次候选版音视频解码抽测：《我合成了全世界啊第3季》第 4、5 集，以及《觉醒伪神：神明弃我我自为神8》第 2 集的前 5 秒通过。《我合成了全世界啊第3季》第 351 集和《末世选择，从解析神明开始成神第三季》第 2 集仍出现空正文或无兼容资源，保留为未恢复项；不作所有分集均可播放的承诺。
+Mac JSTV 1.17 实机：已更新 1.0.4，《我合成了全世界啊第3季》第 4 集从原进度恢复播放、切至第 5 集正常播放约 17 秒，均显示 1080P / HEVC 硬解。
+
+本次音视频解码抽测：《我合成了全世界啊第3季》第 4、5 集，以及《觉醒伪神：神明弃我我自为神8》第 2 集的前 5 秒通过。《我合成了全世界啊第3季》第 351 集和《末世选择，从解析神明开始成神第三季》第 2 集仍出现空正文或无兼容资源，保留为未恢复项；不作所有分集均可播放的承诺。
 
 接口适配参考 [jycao2/hongguoTV 的取流实现](https://github.com/jycao2/hongguoTV/blob/main/kotlin-tv/core/src/main/kotlin/com/hongguotv/core/ContentRepository.kt) 及 [dddmiku/hongguo-tv](https://github.com/dddmiku/hongguo-tv/blob/main/app/src/main/java/cn/hongguo/tv/api/Api.java)。
 
