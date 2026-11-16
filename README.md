@@ -22,6 +22,19 @@ https://raw.githubusercontent.com/luoyan333/JSTV-myself/main/index.js.md5
 - 视频分段读取、拖动进度与切集。
 - 片源不提供兼容的所选画质时明确报错，不以高画质冒充低画质。
 
+## 1.0.4 播放取流修复（2026-11-16）
+
+旧 `POST /novel/player/video_model/v1/` 在本机实测持续返回空正文。本版改用当前 `GET /reading/bookapi/video_tab/multi_video_model/v1/`，按本集 ID 读取 `video_model_data`；保留配套播放签名，校准请求时间戳。
+
+- 空响应、网络故障或缺少兼容资源时，有限尝试官方备用线路、兼容设备档位及单集 GET 接口。
+- 播放模型请求设置约 22 秒预算。匿名会话空响应或无兼容编码时每分钟最多恢复一次，不读取既有账号资料、不保存身份，不无限重试。鉴权拒绝和限流立即停止。
+- 继续排除不支持的 ByteVC2 视频；未取得兼容资源时明确报错，不伪装为可播或其他画质。
+- 搜索、分集和本地媒体代理沿用原功能，兼容 JSTV 内置无 ICU 的 NodeMobile。
+
+本次候选版音视频解码抽测：《我合成了全世界啊第3季》第 4、5 集，以及《觉醒伪神：神明弃我我自为神8》第 2 集的前 5 秒通过。《我合成了全世界啊第3季》第 351 集和《末世选择，从解析神明开始成神第三季》第 2 集仍出现空正文或无兼容资源，保留为未恢复项；不作所有分集均可播放的承诺。
+
+接口适配参考 [jycao2/hongguoTV 的取流实现](https://github.com/jycao2/hongguoTV/blob/main/kotlin-tv/core/src/main/kotlin/com/hongguotv/core/ContentRepository.kt) 及 [dddmiku/hongguo-tv](https://github.com/dddmiku/hongguo-tv/blob/main/app/src/main/java/cn/hongguo/tv/api/Api.java)。
+
 ## 1.0.3 JSTV 启动兼容修复（2026-11-06）
 
 1.0.2 的 Unicode 属性正则不兼容 JSTV 1.17 内置的无 ICU NodeMobile 18.20.4，导致源无法加载、订阅页转圈。1.0.3 改用显式字符范围，并自行处理全角字符；保留搜索分页和续季补全。已用 JSTV 自带 NodeMobile 通过语法、搜索逻辑和真实请求测试，并在 macOS JSTV 1.17 中确认订阅入口恢复、“觉醒伪神”显示第 1—8 季；第 6、8 季的第 2 集均实际播放，显示 1080P / HEVC 硬解，分别播放约 15、17 秒。本次为抽样验收，不代表全部分集完整播放验证。

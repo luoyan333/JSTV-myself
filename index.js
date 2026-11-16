@@ -1,4 +1,4 @@
-/* JSTV 红果短剧独立源 1.0.3, 2026-11-06.
+/* JSTV 红果短剧独立源 1.0.4, 2026-11-16.
  * GPL-3.0-or-later. PureSign: sunnysky123/hongguo-web, jackotom/hongguo-drama,
  * woshishiq1/drpys. Anonymous registration: qq294716498/HongguoTV-Phone-TV-NoAds.
  * CENC sample indexing adapted from Yswag/xptv-extensions.
@@ -1058,7 +1058,7 @@ const BASE='https://hongguoduanju.com',PREFIX='/spider/hongguo_local/3';
 const WEB_UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0 Safari/537.36';
 const APP_UA='com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)';
 const agent=new https.Agent({keepAlive:true,maxSockets:8});
-let server,identityPromise=null;const pageCache=new Map(),mediaCache=new Map();
+let server,identityPromise=null,identityRecoveryAt=0;const pageCache=new Map(),mediaCache=new Map();
 function request(url,opts={},redirects=0){
  return new Promise((resolve,reject)=>{
   const u=new URL(url);if(!['https:','http:'].includes(u.protocol))return reject(Error('不支持的地址协议'));
@@ -1076,13 +1076,13 @@ function request(url,opts={},redirects=0){
 }
 function parseJSON(text){return JSON.parse(text.replace(/("(?:series_id|series_id_str|device_id|install_id|book_id|video_id|vid)"\s*:\s*)(\d{16,})/g,'$1"$2"'))}
 async function anonymousIdentity(){if(!identityPromise)identityPromise=registerAnonymous().catch(e=>{identityPromise=null;throw e});return identityPromise}
-async function api(path,payload,extra={}){
+async function api(path,payload,extra={},host='api5-normal-sinfonlineb.fqnovel.com',options={}){
  const dev=await anonymousIdentity(),body=payload==null?null:Buffer.from(JSON.stringify(payload));
  const qs=new URLSearchParams({aid:'8662',app_name:'novelread',version_code:'73532',version_name:'7.3.5.32',manifest_version_code:'73532',update_version_code:'73532',channel:'update_64',device_platform:'android',os:'android',ssmix:'a',device_type:'25053RT47C',device_brand:'Redmi',language:'zh',os_api:'36',os_version:'16',resolution:'1280*2772',dpi:'520',ac:'wifi',device_id:dev.device_id,iid:dev.install_id,...extra});qs.sort();
  const ts=Math.floor(Date.now()/1000);qs.set('_rticket',String(Date.now()));let url;
- for(let n=0;n<24;n++){url='https://api5-normal-sinfonlineb.fqnovel.com'+path+'?'+qs; if(PureSign.branchOf(url,body,ts)!==1)break;qs.set('_rticket',String(Number(qs.get('_rticket'))+1))}
- const headers={'User-Agent':APP_UA,Accept:'application/json','Content-Type':'application/json; charset=utf-8','X-XS-From-Web':'0','Sdk-Version':'2','X-SS-Req-Ticket':String(Date.now()),...(body?{'X-SS-STUB':crypto.createHash('md5').update(body).digest('hex').toUpperCase()}:{}),...(path==='/novel/player/video_model/v1/'?PlayerSign.sign(url,body,ts):PureSign.sign(url,body,ts))};
- for(let n=0;n<3;n++){const r=await request(url,{method:body?'POST':'GET',headers,body,timeout:12000});if(r.status!==200)throw Error('播放接口 HTTP '+r.status);if(r.data.length){const x=parseJSON(r.data.toString());if(Number(x.code||x.Code||0)!==0)throw Error('播放接口业务错误 '+(x.code||x.Code));return x}if(n<2)await new Promise(r=>setTimeout(r,300*(n+1)))}
+ for(let n=0;n<24;n++){url='https://'+host+path+'?'+qs; if(path.startsWith('/reading/bookapi/video_tab/')||PureSign.branchOf(url,body,ts)!==1)break;qs.set('_rticket',String(Number(qs.get('_rticket'))+1))}
+ const headers={'User-Agent':APP_UA,Accept:'application/json','Content-Type':'application/json; charset=utf-8','X-XS-From-Web':'0','Sdk-Version':'2','X-SS-Req-Ticket':qs.get('_rticket'),...(body?{'X-SS-STUB':crypto.createHash('md5').update(body).digest('hex').toUpperCase()}:{}),...((path==='/novel/player/video_model/v1/'||path.startsWith('/reading/bookapi/video_tab/'))?PlayerSign.sign(url,body,ts):PureSign.sign(url,body,ts))};
+ for(let n=0,attempts=path.startsWith('/reading/bookapi/video_tab/')?1:3;n<attempts;n++){const r=await request(url,{method:body?'POST':'GET',headers,body,timeout:Math.min(12000,Number(options.timeout)||12000)});if(r.status!==200)throw Error('播放接口 HTTP '+r.status);if(r.data.length){const x=parseJSON(r.data.toString());if(Number(x.code||x.Code||0)!==0)throw Error('播放接口业务错误 '+(x.code||x.Code));return x}if(n<attempts-1)await new Promise(r=>setTimeout(r,300*(n+1)))}
  throw Error('播放接口返回空内容，请稍后重试');
 }
 function routerData(html){let p=html.indexOf('_ROUTER_DATA');if(p<0)throw Error('官网页面结构已变化');p=html.indexOf('{',p);let depth=0,quote=false,escape=false;for(let i=p;i<html.length;i++){const c=html[i];if(quote){if(escape)escape=false;else if(c==='\\')escape=true;else if(c==='"')quote=false}else if(c==='"')quote=true;else if(c==='{')depth++;else if(c==='}'&&!--depth)return parseJSON(html.slice(p,i+1))}throw Error('官网页面内容不完整')}
@@ -1198,12 +1198,40 @@ async function search(body){
 async function detail(body){const id=String(body.id||'');if(!/^\d{10,24}$/.test(id))throw Error('剧集编号无效');const data=await page('/detail?series_id='+id),v=data.detail_page?.seriesDetail||Object.values(data).find(x=>x?.seriesDetail)?.seriesDetail;if(!v)throw Error('官网未返回剧集详情');const vids=(v.vid_list||[]).map(String).filter(x=>/^\d{10,24}$/.test(x));if(!vids.length)throw Error('官网未返回分集');return {list:[{...card(v),vod_id:id,type_name:(v.tags||[]).join(' / '),vod_content:String(v.series_intro||''),vod_remarks:'全'+vids.length+'集',vod_play_from:'自动 · 最高1080P$$$720P$$$480P',vod_play_url:[0,720,480].map(q=>vids.map((vid,i)=>'第'+(i+1)+'集$'+id+':'+vid+'|'+q).join('#')).join('$$$')}]}}
 function contentKey(spade){const raw=Buffer.from(spade||'','base64');if(raw.length<3)throw Error('媒体密钥格式无效');const tag=(raw[0]^raw[1]^raw[2])-48,n=raw.length-tag-1;if(tag<1||n<33||n>=raw.length)throw Error('媒体密钥结构无效');const out=Buffer.alloc(n);let even=250,odd=85;for(let i=0;i<n;i++){const cur=raw[i+1],prev=i%2?odd:even;if(i%2)odd=cur;else even=cur;let x=i,count=0;for(;x;x>>>=1)count+=x&1;out[i]=((prev^cur)-21-count)&255}if(!/^[0-9a-fA-F]{32}$/.test(out.subarray(1,33).toString()))throw Error('媒体密钥版本不支持');return Buffer.from(out.subarray(1,33).toString(),'hex')}
 function mediaAddress(v){let s=String(v||'').trim();if(!/^https?:\/\//.test(s))s=Buffer.from(s,'base64').toString();if(!/^https?:\/\//.test(s))return '';return s}
-async function resolveMedia(vid,quality){
- const result=await api('/novel/player/video_model/v1/',{video_id:vid,content_type:1,biz_param:{need_all_video_definition:true,video_platform:3}});
- const e=result.data||{},raw=e.video_model;let model=raw;if(typeof raw==='string'){try{model=JSON.parse(raw)}catch(err){model=JSON.parse(Buffer.from(raw,'base64').toString())}}if(!model&&e.video_list)model=e;if(!model)throw Error('未返回播放模型');
- let rows=Object.values(model.video_list||{}).map(v=>{const m=v.video_meta||{},enc=v.encrypt_info||{};return {url:mediaAddress(v.main_url)||mediaAddress(v.backup_url),spade:enc.spade_a||'',encrypted:!!enc.encrypt,codec:String(m.codec_type||'').toLowerCase(),quality:parseInt(m.definition)||Math.min(m.vwidth||99999,m.vheight||99999)}}).filter(v=>v.url&&!['bytevc2','bvc2'].includes(v.codec));
- rows.sort((a,b)=>b.quality-a.quality);if(quality)rows=rows.filter(v=>v.quality<=quality);if(!rows.length)throw Error('本集没有兼容的所选画质');const selected=rows[0];if(selected.encrypted&&!selected.spade)throw Error('未返回媒体密钥');return {...selected,key:selected.spade?contentKey(selected.spade):null};
+async function resolveMediaAttempt(vid,quality,deadline=Date.now()+22000){
+ const params={video_id:vid,video_id_type:'0',need_all_video_definition:'1',need_mp4_align:'0',use_os_player:'0',video_platform:'1024',source:'0',from_video_id:''};
+ const plans=[['api5-normal-sinfonlineb.fqnovel.com','1'],['reading.snssdk.com','1'],['api5-normal-sinfonlineb.fqnovel.com','3'],['reading.snssdk.com','3'],['api5-normal-sinfonlineb.fqnovel.com','1',true],['reading.snssdk.com','1',true]];
+ let lastError;
+ for(const [host,level,single] of plans){
+  if(Date.now()>=deadline)break;
+  try{
+   const path=single?'/reading/bookapi/video_tab/video_model/v1/':'/reading/bookapi/video_tab/multi_video_model/v1/',extra=single?{video_id:vid,need_all_video_definition:'1'}:{...params,device_level:level};
+   const result=await api(path,null,extra,host,{timeout:Math.max(1,Math.min(5000,deadline-Date.now()))}),data=result.data||{},entry=data.video_model_data?.[vid]||data[vid]||data,raw=entry.video_model;
+   let model=raw;if(typeof raw==='string'){try{model=JSON.parse(raw)}catch(e){model=JSON.parse(Buffer.from(raw,'base64').toString())}}if(!model&&entry.video_list)model=entry;
+   if(!model||!Object.keys(model.video_list||{}).length)throw Error('播放接口未返回本集可用视频');
+   let rows=Object.values(model.video_list||{}).map(v=>{const m=v.video_meta||{},enc=v.encrypt_info||{};return {url:mediaAddress(v.main_url)||mediaAddress(v.backup_url),spade:enc.spade_a||'',encrypted:!!enc.encrypt,codec:String(m.codec_type||'').toLowerCase(),quality:parseInt(m.definition)||Math.min(m.vwidth||99999,m.vheight||99999)}}).filter(v=>v.url&&!['bytevc2','bvc2'].includes(v.codec));
+   rows.sort((a,b)=>b.quality-a.quality);if(quality)rows=rows.filter(v=>v.quality<=quality);
+   if(!rows.length)throw Error('本集暂未返回兼容的所选画质');
+   const selected=rows[0];if(selected.encrypted&&!selected.spade)throw Error('未返回媒体密钥');
+   return {...selected,key:selected.spade?contentKey(selected.spade):null};
+  }catch(e){lastError=e;if(!/空内容|上游请求超时|HTTP 5|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket|未返回本集可用视频|暂未返回兼容/.test(String(e.message)))throw e}
+ }
+ throw lastError||Error('播放接口暂不可用');
 }
+async function resolveMedia(vid,quality){
+ const deadline=Date.now()+22000;await anonymousIdentity();const observed=identityPromise;
+ try{return await resolveMediaAttempt(vid,quality,deadline)}catch(error){
+  // One bounded anonymous-session recovery; never retry auth failures or rate limits.
+  if(!/空内容|暂未返回兼容/.test(String(error.message))||deadline-Date.now()<13000)throw error;
+  if(identityPromise===observed){
+   if(Date.now()-identityRecoveryAt<60000)throw error;
+   identityRecoveryAt=Date.now();identityPromise=null;
+  }
+  await anonymousIdentity();await new Promise(r=>setTimeout(r,750));
+  return await resolveMediaAttempt(vid,quality,deadline);
+ }
+}
+
 async function play(body){const m=String(body.id||'').match(/^(\d{10,24}):(\d{10,24})\|(0|480|720)$/);if(!m)throw Error('分集编号无效');const cacheKey=m[2]+'|'+m[3];let item=mediaCache.get(cacheKey);if(!item||Date.now()-item.created>1200000){const media=await resolveMedia(m[2],Number(m[3]));item={...media,created:Date.now(),id:crypto.randomBytes(12).toString('hex'),ready:false};await prepare(item);if(mediaCache.size>=8)mediaCache.delete(mediaCache.keys().next().value);mediaCache.set(cacheKey,item)}const address=server.address();return {parse:0,url:'http://127.0.0.1:'+address.port+PREFIX+'/video/'+item.id+'.mp4',header:{'User-Agent':'JSTV-Hongguo/1.0'},format:'video/mp4'}}
 function boxes(b,start=0,end=b.length){const out=[];for(let p=start;p+8<=end;){let size=b.readUInt32BE(p),head=8;const type=b.toString('ascii',p+4,p+8);if(size===1){if(p+16>end)break;size=Number(b.readBigUInt64BE(p+8));head=16}else if(!size)size=end-p;if(size<head||p+size>end)break;out.push({type,start:p,data:p+head,end:p+size,size});p+=size}return out}
 function child(b,box,type){return boxes(b,box.data,box.end).find(x=>x.type===type)}
@@ -1215,7 +1243,7 @@ function transform(item,start,data){const out=Buffer.from(data),end=start+out.le
 async function serveVideo(req,res,id){const item=[...mediaCache.values()].find(x=>x.id===id);if(!item){res.writeHead(410);res.end();return}let start=0,end=item.total-1;const header=req.headers.range;if(header){const m=header.match(/^bytes=(\d*)-(\d*)$/);if(!m){res.writeHead(416,{'Content-Range':'bytes */'+item.total});res.end();return}if(!m[1]){start=Math.max(0,item.total-Number(m[2]));}else {start=Number(m[1]);if(m[2])end=Math.min(end,Number(m[2]));}if(!Number.isSafeInteger(start)||start<0||start>end||start>=item.total){res.writeHead(416,{'Content-Range':'bytes */'+item.total});res.end();return}}const headers={'Content-Type':'video/mp4','Content-Length':end-start+1,'Accept-Ranges':'bytes','Cache-Control':'no-store'};if(header)headers['Content-Range']='bytes '+start+'-'+end+'/'+item.total;res.writeHead(header?206:200,headers);if(req.method==='HEAD'){res.end();return}const controller=new AbortController();res.once('close',()=>controller.abort());try{for(let pos=start;pos<=end&&!res.destroyed;){const last=Math.min(end,pos+512*1024-1);let buf;if(last<item.head.length)buf=item.head.subarray(pos,last+1);else buf=transform(item,pos,(await range(item.url,pos,last,controller.signal)).data);if(!res.write(buf))await new Promise(resolve=>{const done=()=>{res.removeListener('drain',done);res.removeListener('close',done);resolve()};res.once('drain',done);res.once('close',done)});pos=last+1}if(!res.destroyed)res.end()}catch(e){if(!res.destroyed)res.destroy()}}
 function send(res,data,status=200){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data))}
 function config(){return {video:{sites:[{key:'nodejs_hongguo_local',name:'红果短剧·独立版',type:3,api:PREFIX,searchable:1,quickSearch:1,filterable:1}]},read:{sites:[]},comic:{sites:[]},music:{sites:[]},pan:{sites:[]},color:[]}}
-async function handler(req,res){try{const path=new URL(req.url,'http://127.0.0.1').pathname;if(req.method==='OPTIONS'){res.writeHead(204);res.end();return}if(path==='/config'||path==='/full-config')return send(res,config());if(path==='/check')return send(res,{run:true});if(path==='/website'||path==='/website/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<!doctype html><meta charset="utf-8"><title>红果短剧独立源</title><h1>红果短剧·独立版</h1><p>1.0.3 · 2026-11-06</p><p>无需账号登录。匿名设备身份与临时播放信息只留在内存中。</p><p>在 JSTV「我的扩展」选择本源即可搜索和观看。</p>');return}const video=path.match(new RegExp('^'+PREFIX+'/video/([a-f0-9]{24})\\.mp4$'));if(video&&['GET','HEAD'].includes(req.method))return await serveVideo(req,res,video[1]);if(req.method!=='POST'||!path.startsWith(PREFIX+'/'))return send(res,{error:'Not Found'},404);const chunks=[];let size=0;for await(const b of req){size+=b.length;if(size>65536)return send(res,{error:'请求过大'},413);chunks.push(b)}const body=parseJSON(Buffer.concat(chunks).toString()||'{}'),action=path.slice(PREFIX.length+1),actions={init:async()=>({}),home,category,search,detail,play};if(!actions[action])return send(res,{error:'Not Found'},404);send(res,await actions[action](body))}catch(e){if(!res.headersSent)send(res,{error:String(e.message||'源请求失败'),message:String(e.message||'源请求失败'),list:[]},502);else res.destroy()}}
+async function handler(req,res){try{const path=new URL(req.url,'http://127.0.0.1').pathname;if(req.method==='OPTIONS'){res.writeHead(204);res.end();return}if(path==='/config'||path==='/full-config')return send(res,config());if(path==='/check')return send(res,{run:true});if(path==='/website'||path==='/website/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<!doctype html><meta charset="utf-8"><title>红果短剧独立源</title><h1>红果短剧·独立版</h1><p>1.0.4 · 2026-11-16</p><p>无需账号登录。匿名设备身份与临时播放信息只留在内存中。</p><p>在 JSTV「我的扩展」选择本源即可搜索和观看。</p>');return}const video=path.match(new RegExp('^'+PREFIX+'/video/([a-f0-9]{24})\\.mp4$'));if(video&&['GET','HEAD'].includes(req.method))return await serveVideo(req,res,video[1]);if(req.method!=='POST'||!path.startsWith(PREFIX+'/'))return send(res,{error:'Not Found'},404);const chunks=[];let size=0;for await(const b of req){size+=b.length;if(size>65536)return send(res,{error:'请求过大'},413);chunks.push(b)}const body=parseJSON(Buffer.concat(chunks).toString()||'{}'),action=path.slice(PREFIX.length+1),actions={init:async()=>({}),home,category,search,detail,play};if(!actions[action])return send(res,{error:'Not Found'},404);send(res,await actions[action](body))}catch(e){if(!res.headersSent)send(res,{error:String(e.message||'源请求失败'),message:String(e.message||'源请求失败'),list:[]},502);else res.destroy()}}
 async function start(options={}){if(server)await stop();server=typeof globalThis.catServerFactory==='function'?globalThis.catServerFactory(handler):http.createServer(handler);const port=Number(options.port)||9988;await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve)});return server}
-async function stop(){if(server){const old=server;server=null;if(typeof old.closeAllConnections==='function')old.closeAllConnections();await new Promise(r=>old.close(r))}agent.destroy();mediaCache.clear();pageCache.clear();searchCursors.clear();identityPromise=null}
+async function stop(){if(server){const old=server;server=null;if(typeof old.closeAllConnections==='function')old.closeAllConnections();await new Promise(r=>old.close(r))}agent.destroy();mediaCache.clear();pageCache.clear();searchCursors.clear();identityPromise=null;identityRecoveryAt=0}
 module.exports={start,stop,getServer:()=>server};
