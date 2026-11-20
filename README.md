@@ -22,6 +22,16 @@ https://raw.githubusercontent.com/luoyan333/JSTV-myself/main/index.js.md5
 - 视频分段读取、拖动进度与切集。
 - 片源不提供兼容的所选画质时明确报错，不以高画质冒充低画质。
 
+## 1.0.6 播放接口更新（2026-11-20）
+
+旧版取流请求可能收到 HTTP 200 空正文。本版适配当前播放接口。主请求返回空正文时，沿用同一次匿名会话尝试一次备用接口，并按所选分集编号校验返回结果。遇到限流或业务拒绝会停止本次取流。
+
+支持新版的内联片源和独立媒体信息两种响应。自动画质、720P、480P 及已支持的编码继续按原规则选择。
+
+已用 Node.js 的模拟响应验证新旧签名兼容、主接口、空响应切换、分集匹配、画质上限、媒体分段和拒绝处理。当前尚无 1.0.6 的 Apple 设备实播结果。
+
+播放接口适配参考 [sunnysky123/hongguo-web 1.3.3](https://github.com/sunnysky123/hongguo-web/commit/17f7b86502353efdddaa2bf0f7d25c5e069dbc85) 和 [N3urda/hongguoTV](https://github.com/N3urda/hongguoTV)。
+
 ## 1.0.5 编码兼容修复（2026-11-16）
 
 部分分集虽有完整播放模型，但全部直链均为 JSTV 不支持的 ByteVC2；1.0.4 直接过滤后误报“没有兼容资源”。本版在这种情况下向平台返回的官方媒体信息接口声明 HEVC／H.264 解码能力，取消仅限 ByteVC2 文件的选择条件，取得同一分集的兼容版本。继续使用匿名取流，不需要另外安装播放器或转码服务。
@@ -96,4 +106,4 @@ Mac JSTV 1.17 实机：已更新 1.0.4，《我合成了全世界啊第3季》�
 
 原搜索签名算法参考 [sunnysky123/hongguo-web](https://github.com/sunnysky123/hongguo-web)，其注释标明上游为 jackotom/hongguo-drama、woshishiq1/drpys；匿名设备注册参考 [HongguoTV-Phone-TV-NoAds](https://github.com/qq294716498/HongguoTV-Phone-TV-NoAds)；视频采样索引适配参考 [Yswag/xptv-extensions](https://github.com/Yswag/xptv-extensions/tree/jstv)。
 
-适配源代码按 GPL-3.0-or-later 提供，见 `LICENSE`。同时保留参考实现的 MIT 声明，见 `LICENSE.upstream-MIT`；各部分原有权利声明继续有效。
+从 1.0.6 起，包含新版播放适配的完整脚本按 GPL-3.0-only 提供，见 `LICENSE`。参考实现的 MIT 声明保留在 `LICENSE.upstream-MIT`，各部分原有权利声明继续有效。

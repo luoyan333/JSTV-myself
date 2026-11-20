@@ -1,8 +1,10 @@
-/* JSTV 红果短剧独立源 1.0.5, 2026-11-16.
- * GPL-3.0-or-later. PureSign: sunnysky123/hongguo-web, jackotom/hongguo-drama,
+/* JSTV 红果短剧独立源 1.0.6, 2026-11-20.
+ * SPDX-License-Identifier: GPL-3.0-only
+ * PureSign: sunnysky123/hongguo-web, jackotom/hongguo-drama,
  * woshishiq1/drpys. Anonymous registration: qq294716498/HongguoTV-Phone-TV-NoAds.
  * CENC sample indexing adapted from Yswag/xptv-extensions.
  * Media URL decoding adapted from jycao2/hongguoTV (GPL-3.0).
+ * Playback v5: sunnysky123/hongguo-web and N3urda/hongguoTV (GPL-3.0-only).
  * No account login, user cookies, configuration reads or persistent secrets.
  */
 'use strict';
@@ -81,13 +83,11 @@ return module.exports;})();
 const PureSign=(()=>{const module={exports:{}};
 'use strict';
 /**
- * 红果 App 接口签名，纯 JS 实现（对应原 Java core/PureSign.java，
- * 不再依赖 unidbg + libmetasec_ml.so）。
+ * 红果 App 接口签名，纯 JS 实现（不依赖任何外部进程或 native so）。
  *
- * 移植自 jackotom/hongguo-drama 的 src/native/app-source.js（GPL-3.0），
+ * 算法源自 jackotom/hongguo-drama 的 src/native/app-source.js（GPL-3.0），
  * 其签名与 spade 算法改编自 woshishiq1/drpys，经 N3urda/hongguoTV 传递。
- * 原实现用 unidbg 在 x86 上模拟 ARM64 so 计算同样的六个签名头；
- * 此处按同一算法直接计算，字节级对齐：
+ * 六个签名头按同一算法直接计算，字节级对齐：
  *
  *   x-gorgon  : RC4 变体 + 位旋转/位反转后处理
  *   x-khronos : 秒级时间戳
@@ -103,13 +103,11 @@ const PureSign=(()=>{const module={exports:{}};
  * 注意：签名对 query 字节级敏感，URL 必须与最终发出的请求完全一致
  * （本模块只读 url 的 '?' 之后部分做 sm3，因此调用方传入什么就签什么）。
  *
- * 移植约定：Java byte[] 为有符号（-128..127），JS 用 Buffer 并在需要处
- * 以 `& 0xff` 取无符号；Java int 的 32 位溢出用 `| 0` 对齐；Java long
- * 的 64 位运算用 BigInt。
+ * 实现约定：字节统一用 Buffer 并在需要处 `& 0xff` 取无符号；32 位整数溢出
+ * 用 `| 0` 对齐；64 位整数运算用 BigInt。
  */
 const crypto = require('crypto');
 const Crypto = CryptoUtil;
-
 
 // SM3 由 Node 内置 crypto 提供（依赖 OpenSSL >= 1.1.1，Node >= 18 均满足）；
 // 不可用时直接抛错，不做降级——x-medusa 签名链路离开 SM3 无法工作。
@@ -146,74 +144,55 @@ function reverseBits(value) {
   return r;
 }
 
+/**
+ * 读 32 位整型。
+ * 入参统一为 Buffer，直接走 Node 内置的 readUInt32LE/BE，
+ * 不再手写位移拼接（历史实现是逐字节移位）。
+ */
 function readLe32(b, off) {
-  return ((b[off] & 0xff) | ((b[off + 1] & 0xff) << 8)
-    | ((b[off + 2] & 0xff) << 16) | ((b[off + 3] & 0xff) << 24)) | 0;
+  return b.readInt32LE(off);
 }
 
 function readBe32(b, off) {
-  return (((b[off] & 0xff) << 24) | ((b[off + 1] & 0xff) << 16)
-    | ((b[off + 2] & 0xff) << 8) | (b[off + 3] & 0xff)) | 0;
+  return b.readInt32BE(off);
 }
 
+/** 写 32 位整型（Buffer 内置，接受 int32 语义）。 */
 function putLe32(b, off, v) {
-  b[off] = v & 0xff;
-  b[off + 1] = (v >>> 8) & 0xff;
-  b[off + 2] = (v >>> 16) & 0xff;
-  b[off + 3] = (v >>> 24) & 0xff;
+  b.writeInt32LE(v | 0, off);
 }
 
 function putBe32(b, off, v) {
-  b[off] = (v >>> 24) & 0xff;
-  b[off + 1] = (v >>> 16) & 0xff;
-  b[off + 2] = (v >>> 8) & 0xff;
-  b[off + 3] = v & 0xff;
+  b.writeInt32BE(v | 0, off);
 }
 
 function le32(v) {
   const b = Buffer.alloc(4);
-  putLe32(b, 0, v);
+  b.writeInt32LE(v | 0, 0);
   return b;
 }
 
 function be32(v) {
   const b = Buffer.alloc(4);
-  putBe32(b, 0, v);
+  b.writeInt32BE(v | 0, 0);
   return b;
 }
 
-/** 读 64 位小端无符号（对应 Java readU64Le，语义按无符号位型处理）。 */
+/** 读 64 位无符号（Buffer 内置 readBigUInt64LE）。 */
 function readU64Le(b, off) {
-  let v = 0n;
-  for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(b[off + i] & 0xff);
-  return BigInt.asUintN(64, v);
-}
-
-function putU64Be(b, off, v) {
-  const x = BigInt.asUintN(64, v);
-  for (let i = 0; i < 8; i++) b[off + i] = Number((x >> BigInt(56 - 8 * i)) & 0xffn);
+  return b.readBigUInt64LE(off);
 }
 
 function putU64Le(b, off, v) {
-  const x = BigInt.asUintN(64, v);
-  for (let i = 0; i < 8; i++) b[off + i] = Number((x >> BigInt(8 * i)) & 0xffn);
+  b.writeBigUInt64LE(BigInt.asUintN(64, BigInt(v)), off);
 }
 
-/** 64 位循环右移（对应 Java Long.rotateRight）。 */
+/** 64 位循环右移。 */
 function rotr64(x, n) {
   const v = BigInt.asUintN(64, x);
   const k = BigInt(n & 63);
   if (k === 0n) return v;
   return BigInt.asUintN(64, (v >> k) | (v << (64n - k)));
-}
-
-function concat(...parts) {
-  return Buffer.concat(parts);
-}
-
-/** 对应 Java slice(byte[], from, to)：返回同区间字节（此处用视图即可）。 */
-function sliceBytes(b, from, to) {
-  return b.subarray(from, to);
 }
 
 function xorBytes(a, b) {
@@ -228,10 +207,6 @@ function md5(data) {
 
 function sm3(data) {
   return crypto.createHash('sm3').update(data).digest();
-}
-
-function b64(data) {
-  return data.toString('base64');
 }
 
 const EMPTY = Buffer.alloc(0);
@@ -262,10 +237,10 @@ function protoField(tag, value, type) {
   let body;
   if (type === 'bytes' || type === 'message') {
     body = value;
-    head = concat(varint((BigInt(tag) << 3n) | 2n), varint(body.length));
+    head = Buffer.concat([varint((BigInt(tag) << 3n) | 2n), varint(body.length)]);
   } else if (type === 'string') {
-    body = Buffer.from(String(value), 'utf8');
-    head = concat(varint((BigInt(tag) << 3n) | 2n), varint(body.length));
+    body = Buffer.from(String(value));
+    head = Buffer.concat([varint((BigInt(tag) << 3n) | 2n), varint(body.length)]);
   } else if (type === 'float') {
     body = Buffer.alloc(4);
     body.writeFloatLE(Number(value), 0);
@@ -275,7 +250,7 @@ function protoField(tag, value, type) {
     head = varint(BigInt(tag) << 3n);
     body = varint(type === 'sint' ? zigzag(v) : v);
   }
-  return concat(head, body);
+  return Buffer.concat([head, body]);
 }
 
 /** proto([[tag, value, type], ...]) 的紧凑写法。 */
@@ -285,7 +260,7 @@ function proto(fields) {
     const type = f.length > 2 ? String(f[2]) : 'string';
     parts.push(protoField(Number(f[0]), f[1], type));
   }
-  return concat(...parts);
+  return Buffer.concat(parts);
 }
 
 // ==================== hashF13 家族 ====================
@@ -402,7 +377,7 @@ function md5SumV3(message, countV2, orders, countV1) {
   putLe32(ret, 4, (start[1] + b) ^ end[1]);
   putLe32(ret, 8, (start[2] + c) ^ end[2]);
   putLe32(ret, 12, (start[3] + d) ^ end[3]);
-  return concat(ret, le32(sumMd5(ret)));
+  return Buffer.concat([ret, le32(sumMd5(ret))]);
 }
 
 function branch2F13(iv, querySm3, bodyMd5, tsBytes, khronos) {
@@ -415,13 +390,24 @@ function branch2F13(iv, querySm3, bodyMd5, tsBytes, khronos) {
   const seed = [0x84, 0x96, 0x77, 0x9d, 0xd4, 0x15, 0x0b, 0xf8];
   const pad = Buffer.alloc(8);
   for (let i = 0; i < 8; i++) pad[i] = ((seed[i] | (seed[i] << 8)) >> shift) & 255;
-  const input = concat(querySm3, bodyMd5, tsBytes, pad,
-    Crypto.unhex('a0010000'));
+  const input = Buffer.concat([querySm3, bodyMd5, tsBytes, pad,
+    Crypto.unhex('a0010000')]);
   const from = ivV0 << 6;
   const to = (ivV0 + 1) << 6;
-  const orders = sliceBytes(BRANCH2_ORDERS, from, to);
+  const orders = BRANCH2_ORDERS.subarray(from, to);
   return md5SumV3(input, countV2, orders, countV1);
 }
+
+/** hashF13 主分支的字表（VendorConstants.hashTable，v3 与 v5 共用）。 */
+const HASH_TABLE = [
+  0xebb64faf, 0x07aadcc2, 0xcf3187bf, 0xe01138ff, 0x6d0bfcff, 0x5a30a3be, 0xb41ad638, 0x34180eb8,
+  0xf233eb6f, 0xb1a584cc, 0xccc30dc7, 0x47d1db51, 0xd55653de, 0x70a84fa1, 0x57473c12, 0xf76f0288,
+  0x2c077f0a, 0xda0dcad0, 0xfbb86f6c, 0xfdc4cf00, 0x688a020d, 0xe676c6a6, 0x8cd6338b, 0x1a3c8d0e,
+  0xcce8b06b, 0x6ad0ed0b, 0xa0522717, 0xdc71ac83, 0x2285db71, 0xd5b4dda6, 0x736f8650, 0x6560306c,
+  0x617ce2a6, 0xe423417e, 0x0a40e143, 0x544e4032, 0x88dffb2a, 0x716c1ae0, 0x4c467a88, 0x05b23bb3,
+  0xe1d0b866, 0xbaa3dcb8, 0xae3374d3, 0xc3381a50, 0x1702f75b, 0xfe6da368, 0xf0b4cf48, 0x4e0ffbb8,
+  0x72aad10d, 0x26c53a3d, 0xf2bce0f6, 0xb4557581, 0x4a257fdd, 0x8c3182a2, 0xab0b3b86, 0x3d5dfb14,
+  0x4f103634, 0xd37b52d7, 0x444eff16, 0xeb0a33d1, 0x6ca86f6e, 0x0284ba7, 0x08387cfa, 0x5fb37586];
 
 /** hashF13：按 iv 低 4 位选分支（0 为主分支，1 不被服务端接受，2 为备用变体）。 */
 function hashF13(querySm3, bodyMd5, tsBytes, khronos) {
@@ -431,31 +417,23 @@ function hashF13(querySm3, bodyMd5, tsBytes, khronos) {
   const branch = low - ivV0 * 3;
   if (branch === 2) return branch2F13(iv, querySm3, bodyMd5, tsBytes, khronos);
   if (branch !== 0) {
-    return concat(sliceBytes(querySm3, 0, 16), bodyMd5,
-      le32(sumMd5(concat(querySm3, bodyMd5))));
+    return Buffer.concat([querySm3.subarray(0, 16), bodyMd5,
+      le32(sumMd5(Buffer.concat([querySm3, bodyMd5])))]);
   }
 
   const ivV1List = [0xc4a78580, 0xb3c0fd39, 0xc58c5686, 0xc9aa3ba7, 0xf5a7adf2, 0x963c2ed1];
   const ivV1 = ivV1List[ivV0] | 0;
   const countV1 = (ivV1 + khronos + 1) & 255;
   const countV2 = (ivV1 + khronos) | 0;
-  const tt02 = [
-    0xebb64faf, 0x07aadcc2, 0xcf3187bf, 0xe01138ff, 0x6d0bfcff, 0x5a30a3be, 0xb41ad638, 0x34180eb8,
-    0xf233eb6f, 0xb1a584cc, 0xccc30dc7, 0x47d1db51, 0xd55653de, 0x70a84fa1, 0x57473c12, 0xf76f0288,
-    0x2c077f0a, 0xda0dcad0, 0xfbb86f6c, 0xfdc4cf00, 0x688a020d, 0xe676c6a6, 0x8cd6338b, 0x1a3c8d0e,
-    0xcce8b06b, 0x6ad0ed0b, 0xa0522717, 0xdc71ac83, 0x2285db71, 0xd5b4dda6, 0x736f8650, 0x6560306c,
-    0x617ce2a6, 0xe423417e, 0x0a40e143, 0x544e4032, 0x88dffb2a, 0x716c1ae0, 0x4c467a88, 0x05b23bb3,
-    0xe1d0b866, 0xbaa3dcb8, 0xae3374d3, 0xc3381a50, 0x1702f75b, 0xfe6da368, 0xf0b4cf48, 0x4e0ffbb8,
-    0x72aad10d, 0x26c53a3d, 0xf2bce0f6, 0xb4557581, 0x4a257fdd, 0x8c3182a2, 0xab0b3b86, 0x3d5dfb14,
-    0x4f103634, 0xd37b52d7, 0x444eff16, 0xeb0a33d1, 0x6ca86f6e, 0x0284ba7, 0x08387cfa, 0x5fb37586];
-  const tt = new Array(tt02.length);
-  for (let i = 0; i < tt.length; i++) tt[i] = ror(tt02[i], countV1);
+  const tt = new Array(HASH_TABLE.length);
+  for (let i = 0; i < tt.length; i++) tt[i] = ror(HASH_TABLE[i], countV1);
   const n0 = (countV2 + 2) & 7;
   const seed = [0xfa, 0x45, 0x61, 0xd7];
   // JS: Buffer.from(seed.map(...)) —— seed 仅 4 个元素，pad 为 4 字节
   const pad = Buffer.alloc(seed.length);
   for (let i = 0; i < seed.length; i++) pad[i] = ((seed[i] | (seed[i] << 8)) >> n0) & 255;
-  const data = concat(querySm3, bodyMd5, tsBytes, pad, Crypto.unhex('00000000000001a0'));
+  const data = Buffer.concat([querySm3, bodyMd5, tsBytes, pad,
+    Crypto.unhex('00000000000001a0')]);
 
   const di = new Array((data.length / 4) + 112 + 16).fill(0);
   let diLen = 0;
@@ -502,7 +480,7 @@ function hashF13(querySm3, bodyMd5, tsBytes, khronos) {
   const ret = Buffer.alloc(32);
   for (let i = 0; i < 8; i++) putBe32(ret, i * 4, (d[i] + init[i]) | 0);
   for (let i = 0; i < 16; i++) ret[i] = ret[i] ^ ret[i + 16];
-  return concat(sliceBytes(ret, 0, 16), le32(sumMd5(sliceBytes(ret, 0, 16))));
+  return Buffer.concat([ret.subarray(0, 16), le32(sumMd5(ret.subarray(0, 16)))]);
 }
 
 // ==================== x-gorgon ====================
@@ -531,11 +509,11 @@ function rc4Gorgon(data, key) {
 }
 
 function xGorgon(query, body, timestamp, random) {
-  const q4 = sliceBytes(md5(Buffer.from(query, 'utf8')), 0, 4);
+  const q4 = md5(Buffer.from(query)).subarray(0, 4);
   const b4 = body != null && body.length > 0
-    ? sliceBytes(md5(body), 0, 4) : Buffer.alloc(4);
+    ? md5(body).subarray(0, 4) : Buffer.alloc(4);
   const sdk = le32(67503104);
-  const input = concat(q4, b4, Buffer.alloc(4), sdk, be32(timestamp | 0));
+  const input = Buffer.concat([q4, b4, Buffer.alloc(4), sdk, be32(timestamp | 0)]);
   const key = [0x4a, 0x40, 0x16, (random >> 8) & 255, 0x47, 0x6c, 0x01, random & 255];
   const out = rc4Gorgon(input, key);
   for (let i = 0; i < out.length; i++) {
@@ -543,15 +521,63 @@ function xGorgon(query, body, timestamp, random) {
     const next = i + 1 < out.length ? (out[i + 1] & 0xff) : (out[0] & 0xff);
     out[i] = (~(reverseBits((next ^ value) & 255) ^ 20)) & 255;
   }
-  return Crypto.hex(concat(Crypto.unhex('8404'),
-    Buffer.from([random & 255, (random >> 8) & 255, 0x40, 0x01]), out));
+  return Crypto.hex(Buffer.concat([Crypto.unhex('8404'),
+    Buffer.from([random & 255, (random >> 8) & 255, 0x40, 0x01]), out]));
 }
 
 // ==================== AesV3（medusa 内置的 AES 变体） ====================
 
-const SBOX = Buffer.from(
+const SBOX_V3 = Buffer.from(
   '+n0Ia5xZs0sEXznQOEqRmQBnpiCf9U2Ccybu3xhmgzOAAxn72f6uqqmwUsYL83klTni0NqxdGieeiNu9PGPsSRXBMB/cuFbUbM3KCUPINaPvHvSW0vwOcnuUhNHqRVpiAj/TEoE0K91+5ijypUYTATsh9mE3KSoN7Yyvv51cuyR2D3XkU4nhmI2xmmVwT1RMWKtub4sjxAcRDLrPoKSO2AU9FLLadMPX577Wf95IFj6FkKFVt3dCIsmGUC4X+WQxLJvxbRxEaOPpqJOXyzJX6+Vxaq3AzMfF/WAdoi1Hp+JRaV56zgpBtpWP97mH4DoGEIq1+FvV8LyS/3wvwugbQOwb2r26mJEMsiuDQTRn+wrYdrVGBVlhI3WQhyrjUBVMrLF5667llUcEaPCGPVGLD8qO5LlO8hKCvA7V9+8oJc9bXelqVQLhM76T5/WtnT45JKji+hdX0HoNCDDWuKON/QeaxB5uImSX0h2wv0VmP2zd2yeApxHcpsVS+MC2yFwAc2B7oBkTqsk1SEvTpM2fmfMQREBUfin0Bh+iq6EvPPavhWI2IX9e3yAas7Tm/3KEj2UmlFp36kN4x0rMLBRrxuh0U/zUHM4xcAMYjJY4MonxOl/X+alpt2M3WMI7w3HLnpIBigtNiJu7T21v4P6lSd5WFgntnMEt7oF92XzRLkJbTcGmXepE/UVOG6E/0YnhfS+q26utWcuxzpooyeD2cDlK1/8w9d28VzsRjbLuALbmGlp8+d7EzS6Au7lMpZ+ECMZvQmzwJ+eLOpxR+2chdUExp8ogQyq3v9l68rX4jCwjg0+PYKAEEzcU4wHFY2ZcdIHfWL1okD3SszT0GZMyKdZJrg1L2AeerB4tC0C4crp2EHGo5FYdSP7lwkeR2ocmnR+Ia8CYviUJlzOjhRZef9xuVOn3qcjow3fQgivsAmKKkg4+sA8F8/GWeDiGNhg8JM8KtFPMYWWkx5TVFX5t73kiNRJqjlIGVXtGZFCV4gzt0xcDopuZ6xz8r9Rzafpf9ywev8jh8592gHFIqpStZPuJxmDDMrNN0uBE3V+oscdoIzTJbRJ/t+sVvqnReJOgDJKk10fjisJwqyZBmnmn2BSFj8BvVtCMEbkuPOKdzw7eA11GPs04Qw8zWtkaZWwiO/wwpojqN6K0jY5RnNZA7vn4hPSul+nKCkVnVwQvg1zVxcSCtqORmB9KrJaBbssbCQivGJVJfVTt+hYxOtq4ZvWl8f4QAQZ0zGPffCgl9s6yT4vlvIdpu4YhBwA25wtQWZsc6GJYGWHyvSdeuh3mmUI9DSq13Fsp8C1MU3tqc04/df9LoTUXVXI5INOw/e8C7Hd+5CvbkMEFnnrUUmskEw==',
   'base64');
+
+// ==================== v5 播放签名常量（Android v04.10.03 Medusa/Helios/Khronos） ====================
+// 来源：N3urda/hongguoTV V5Constants（GPL-3.0-only）。协议常量，非账号凭据。
+
+/** v5 medusa 的 magic16（消息 field 1 与最终前缀）。 */
+const V5_MAGIC = Crypto.unhex('2d4b4fca49750d433fb5ae2c226dcc56');
+
+/** v5 helios / medusa 的版权方标识。 */
+const V5_LICENSE = '646637794';
+
+/** v5 medusa 的签名密钥（32 字节）。 */
+const V5_SIGN_KEY = Crypto.unhex(
+  'b23c2a470a20d105dc3f8c4438f8272ed46d6c89ffdcdedd5108698d26e9489d');
+
+/** v5 AesV3 的 4 段 S 盒（每段 256 字节）。 */
+const V5_SBOX = Crypto.unhex(
+  '53290fe9e51f316f90f74a7e034d367784ab49237cd0135cdc632c322fd3be0e'
+  + '2624a417ecd9151a7ff64f60730a87f9445ec6ada2f865d22b696c4188f24c0d'
+  + 'f37b75510b939f6bc2fe6883e68bc8c722181ba0bdb08c9871b50c9a16b46ee'
+  + 'a8eed20ba4b8a14e0fcf1468dbbef05a93e5a9d7dcf06898635c1fd99f5de287a'
+  + '80c594daaab19b6279fbd75070cb52eb2555c456e39e7839853874e2f0013ac0'
+  + 'b64742d8ca10e4b79c955de8b843ce4ed464a6a72ed508091c92e7b3eedd1e1d'
+  + 'd12afac321618fa3d65f9167c982f43d66a53c6a1997585b346dbf9672ff37cd'
+  + 'bc073b2dae11453304df00815476b2a13fccdb30b957a8acafe1274002485912'
+  + '38922563e36406d37a24100b7902a028044e218453c2a399199c9d13dc40c55b'
+  + 'a67e502273850ebdc1a2e2188b8f2d9e3cb909b8c46a2a9f4a6dd93007eafa65'
+  + 'b7b3a881aa908cc74f0ad76bbbb58617c37012ca05a469fd44e62eecf1e4272c'
+  + 'e860c0ae5eadf99b20d8f0234174006f3f110d7657d01645d4eff8f71471cbfe'
+  + '1cb2f52648727bf3c9de55153e031b4d61757db63dbf7782eeafe9018a889136'
+  + '2fb14759ac32bab03b349aeb5a377c5156be4c8dfbe13a684bda39cf836697c8'
+  + '94545fe0f2491acea9fc6252f4ff1e0fe72bd2df6e67a7f635e5bcc6d1a5dd95'
+  + '1d89960887a18eb40c785cdb1f80ed42299333ab98cdd67f316cd54346585dcc'
+  + 'd759fb722789b08807cc0fda293f7e5e1819bb0353517020b31d3d00374952be'
+  + 'a2c421e862040a9ec892a05b266b7a0d0cc316f483b81af39715657ffe32ad8d'
+  + 'e0c13077646035236ee5363e5f900e9a7cf850a81cd9960b6df73317226f99ea'
+  + 'a6fff15cec34acb98246639b918ab2851466a7cdfc4ad1b52c2ae95a58d3734e'
+  + '47ddd5b7560193f644ef9c408b7dee39b4d6aabf4de761e3252d4c7ba3843187'
+  + '745d55e6a5db05d42b45caed43c0c5d0b64bfa9d94a4a9d8f2f0e1a108dcfd28'
+  + '8fd2bc1fc7bd675412138169cb09249875ba3b68cfb11180afae104fc9789571'
+  + 'c6dfce02413886796ae21e3c488cc21b9f423a066c2eabf98e2fdeeb5776e4f5'
+  + 'd09a515ba58cbbab3e37b09fd4f6d9244df80512e84cd7956be301cf64f1429d'
+  + '58577cc241f3a2c655144f81aaf95a4e108da894b38970561ae9002619fbbac9'
+  + '1fa922ed202bfc62cb08e0de2a7f3631435f8b47c8a3c563b4db4071ce74c46d'
+  + 'a6fa696a9e282d1e825d663b93bfd56c48dce1884bb10fccea063929f746443f'
+  + 'd830a4232e53da21a1f2d1bdfebc3a02c10a1b8ad31d04fd616590d272ac737e'
+  + '98eb33af60528716bee78ec0ee8699031177277d9cff32542c67caf5f4459168'
+  + '1335ae0e178f3409a7803db83892dde5b9b7f0c750e24aef077badd678a09b85'
+  + '0b84ec1597e4963cb5e675df1c0d6fb618496ecd76c35c798325590c2fb27a5e');
 
 /** JS 语义：越界读返回 0（undefined 在位运算中等价于 0）。 */
 function aesSrc(data, idx) {
@@ -596,22 +622,37 @@ function aesMix(rows) {
 
 /** AES 变体：S 盒按 khronos 选段、行/列换用查表、密钥扩展 12 组。 */
 class AesV3 {
-  constructor(key, khronos) {
+  constructor(key, khronos, v5) {
+    const isV5 = v5 === true;
     this.wordSize = khronos & 3;
-    this.box = sliceBytes(SBOX, this.wordSize * 256, (this.wordSize + 1) * 256);
-    const con2Table = [[1, 0, 2, 3], [2, 0, 3, 1], [0, 1, 3, 2], [1, 0, 2, 3]];
-    const orderTable = [
-      [0, 9, 14, 11, 4, 13, 2, 7, 8, 1, 6, 15, 12, 5, 10, 3],
-      [0, 9, 14, 15, 4, 13, 2, 7, 8, 1, 6, 3, 12, 5, 10, 11],
-      [0, 9, 14, 7, 4, 13, 2, 11, 8, 1, 6, 3, 12, 5, 10, 15],
-      [0, 9, 14, 11, 4, 13, 2, 7, 8, 1, 6, 15, 12, 5, 10, 3]];
+    this.box = (isV5 ? V5_SBOX : SBOX_V3)
+      .subarray(this.wordSize * 256, (this.wordSize + 1) * 256);
+    const con2Table = isV5
+      ? [[2, 0, 3, 1], [1, 3, 2, 0], [3, 2, 1, 0], [2, 3, 1, 0]]
+      : [[1, 0, 2, 3], [2, 0, 3, 1], [0, 1, 3, 2], [1, 0, 2, 3]];
+    const orderTable = isV5
+      ? [
+        [0, 9, 14, 15, 4, 13, 2, 7, 8, 1, 6, 3, 12, 5, 10, 11],
+        [0, 9, 14, 11, 4, 13, 2, 3, 8, 1, 6, 15, 12, 5, 10, 7],
+        [0, 9, 14, 3, 4, 13, 2, 15, 8, 1, 6, 11, 12, 5, 10, 7],
+        [0, 9, 14, 15, 4, 13, 2, 3, 8, 1, 6, 11, 12, 5, 10, 7]]
+      : [
+        [0, 9, 14, 11, 4, 13, 2, 7, 8, 1, 6, 15, 12, 5, 10, 3],
+        [0, 9, 14, 15, 4, 13, 2, 7, 8, 1, 6, 3, 12, 5, 10, 11],
+        [0, 9, 14, 7, 4, 13, 2, 11, 8, 1, 6, 3, 12, 5, 10, 15],
+        [0, 9, 14, 11, 4, 13, 2, 7, 8, 1, 6, 15, 12, 5, 10, 3]];
     this.con2 = con2Table[this.wordSize];
     this.order = orderTable[this.wordSize];
-    const init = [0xca025ddc, 0x823dc546, 0xc9420583, 0xc298225f][this.wordSize];
+    // wire/compact：明文 32 字节与源数据 248 字节之间的位抽吸映射（v5 与 v3 不同）。
+    this.wire = isV5 ? [6, 5, 3, 4, 2, 7, 1, 0] : [5, 6, 2, 4, 3, 1, 0, 7];
+    this.compact = isV5 ? [1, 7, 3, 6, 2, 0, 4, 5] : [1, 6, 0, 7, 2, 4, 5, 3];
+    const init = (isV5
+      ? [0xbbb5de72, 0xd4638d5b, 0x92a5f73b, 0x89f8a1c9]
+      : [0xca025ddc, 0x823dc546, 0xc9420583, 0xc298225f])[this.wordSize];
     const initial = Buffer.alloc(16);
     for (let i = 0; i < 4; i++) putLe32(initial, i * 4, init);
     const mk = xorBytes(initial, key);
-    const expanded = concat(mk, Buffer.alloc(32));
+    const expanded = Buffer.concat([mk, Buffer.alloc(32)]);
     let rounds = 8;
     for (let i = 4; i < 12; i++) {
       const at = 4 * (i - 1);
@@ -696,42 +737,40 @@ class AesV3 {
 
   /** 加密：明文具化到 32 字节 -> CBC 两轮 -> 按 key 逐位回填源数据，末尾缀 key 末字节。 */
   encrypt(data, iv) {
+    const wire = this.wire;
+    const compact = this.compact;
     const plaintext = Buffer.alloc(32);
     for (let i = 0; i < 31; i++) {
       const at = i * 8;
-      const n0 = (aesSrc(data, at) >> 4) & 2;
-      const n1 = n0 | (aesSrc(data, at + 1) & 64);
-      const n2 = n1 | ((aesSrc(data, at + 2) >> 2) & 1);
-      const n3 = n2 | ((aesSrc(data, at + 3) << 3) & 128);
-      const n4 = n3 | ((aesSrc(data, at + 4) >> 1) & 4);
-      const n5 = n4 | ((aesSrc(data, at + 5) << 3) & 16);
-      const n6 = n5 | ((aesSrc(data, at + 6) << 5) & 32);
-      plaintext[i] = (n6 | ((aesSrc(data, at + 7) >> 4) & 8)) & 0xff;
+      let acc = 0;
+      for (let j = 0; j < 8; j++) {
+        acc |= (((aesSrc(data, at + j) >>> wire[j]) & 1) << compact[j]);
+      }
+      plaintext[i] = acc & 0xff;
     }
     plaintext[31] = 1;
     const blocks = [];
     let previous = Buffer.from(iv);
     for (let i = 0; i < plaintext.length; i += 16) {
-      const value = this.block(xorBytes(sliceBytes(plaintext, i, i + 16), previous));
+      const value = this.block(xorBytes(plaintext.subarray(i, i + 16), previous));
       blocks.push(value);
       previous = value;
     }
-    const key = concat(...blocks);
+    const key = Buffer.concat(blocks);
     const out = Buffer.from(data);
     for (let i = 0; i < 31; i++) {
       const at = i * 8;
       const k = key[i] & 0xff;
       // JS 语义：越界读写均静默忽略，故读用 aesSrc()、写用 aesPut()
-      aesPut(out, at, (aesSrc(out, at) & 0xdf) | ((k << 4) & 32));
-      aesPut(out, at + 1, (aesSrc(out, at + 1) & 0xbf) | (k & 64));
-      aesPut(out, at + 2, (aesSrc(out, at + 2) & 0xfb) | ((k << 2) & 4));
-      aesPut(out, at + 3, (aesSrc(out, at + 3) & 0xef) | ((k >> 3) & 16));
-      aesPut(out, at + 4, (aesSrc(out, at + 4) & 0xf7) | ((k + k) & 8));
-      aesPut(out, at + 5, (aesSrc(out, at + 5) & 0xfd) | ((k >> 3) & 2));
-      aesPut(out, at + 6, (aesSrc(out, at + 6) & 0xfe) | ((k >> 5) & 1));
-      aesPut(out, at + 7, (aesSrc(out, at + 7) & 0x7f) | ((k << 4) & 128));
+      for (let j = 0; j < 8; j++) {
+        const bit = wire[j];
+        const mask = ((1 << bit) & 0xff);
+        aesPut(out, at + j,
+          (aesSrc(out, at + j) & ((~mask) & 0xff))
+          | (((k >>> compact[j]) & 1) << bit));
+      }
     }
-    return concat(sliceBytes(key, key.length - 1, key.length), out);
+    return Buffer.concat([key.subarray(key.length - 1, key.length), out]);
   }
 }
 
@@ -769,7 +808,7 @@ function xmxor(data, key) {
 
 /** keyHash：signKey || le32(random) || signKey 的 SM3，附一个由 random 派生的 4 字节种子。 */
 function keyHash(signKey, random) {
-  const hash = sm3(concat(signKey, le32(random), signKey));
+  const hash = sm3(Buffer.concat([signKey, le32(random), signKey]));
   const d1 = (random >> 16) & 255;
   let d2 = (((d1 << 11) | (random >>> 24)) ^ (d1 >> 5) ^ d1);
   d2 = ~d2;
@@ -791,15 +830,25 @@ function randomBytes(n) {
   return crypto.randomBytes(n);
 }
 
-/** 对应 Java RND.nextInt(n)：返回 [0, n) 的整数。 */
+/** 返回 [0, n) 的随机整数。 */
 function rndInt(n) {
   return crypto.randomInt(n);
 }
 
-/** 对应 Java RND.nextInt()：返回有符号 32 位整数。 */
+/**
+ * 返回无符号 32 位随机整数（0 ~ 2^32-1）。
+ *
+ * 参考实现的随机源是 `Math.floor(Math.random() * 0x100000000)`，恒为非负；
+ * 这里同样取无符号，避免下游对符号做隐式假设（medusa 的 `random >> 16`、
+ * `le32(random)` 都基于「非负 32 位整数」这一前提）。
+ */
 function rndInt32() {
+  return crypto.randomBytes(4).readUInt32BE(0);
+}
+function legacyRandomInt32() {
   return crypto.randomBytes(4).readInt32BE(0);
 }
+
 
 /**
  * 设备信息 protobuf。与 jackotom 参考实现保持一致：字段 30-36 为固定设备值
@@ -823,7 +872,7 @@ function deviceProto(deviceId, version) {
 function buildMedusa(url, body, khronos, deviceId, version) {
   const bodyMd5 = body != null && body.length > 0 ? md5(body) : Buffer.alloc(16);
   const query = queryOf(url);
-  const querySm3 = sm3(Buffer.from(query, 'utf8'));
+  const querySm3 = sm3(Buffer.from(query));
   const ts = le32(khronos | 0);
   const queryBodyTs = hashF13(querySm3, bodyMd5, ts, khronos);
 
@@ -839,8 +888,8 @@ function buildMedusa(url, body, khronos, deviceId, version) {
       [1, Math.floor(Date.now() / 1000), 'sint'],
       [2, -2, 'sint'], [4, 200, 'sint']]), 'message'],
     [14, version]]);
-  const queryHash = sm3(concat(Buffer.from(query, 'utf8'), bodyMd5,
-    Buffer.from('none', 'utf8')));
+  const queryHash = sm3(Buffer.concat([Buffer.from(query), bodyMd5,
+    Buffer.from('none')]));
 
   const nested = proto([
     [1, 111, 'sint'], [2, 10, 'sint'], [3, 694367, 'sint'], [5, 586952199, 'sint']]);
@@ -849,7 +898,7 @@ function buildMedusa(url, body, khronos, deviceId, version) {
     [4, '8662'], [5, deviceId], [6, '1588093228'], [7, version],
     [8, 'v04.06.04-ml-android'], [9, 67503104, 'sint'],
     [10, MEDUSA_MAGIC8, 'bytes'], [12, khronos, 'sint'],
-    [13, queryBodyTs, 'bytes'], [14, sliceBytes(querySm3, 0, 6), 'bytes'],
+    [13, queryBodyTs, 'bytes'], [14, querySm3.subarray(0, 6), 'bytes'],
     [15, nested, 'message'], [16, PROCESS_NONCE], [17, khronos, 'sint'],
     [19, queryHash, 'bytes'], [20, 'none'], [21, 312, 'sint'],
     [23, env, 'message'],
@@ -857,12 +906,12 @@ function buildMedusa(url, body, khronos, deviceId, version) {
     + '"kd":0,"fkd":3672518972,"pd":-1872573247,"dyn":"",'
     + '"do":0,"tk":true}']]);
 
-  const random = rndInt32();
+  const random = legacyRandomInt32();
   const hs = keyHash(MEDUSA_SIGN_KEY, random);
   const hash = hs[0];
   const seed = hs[1];
   let transformed = xmxor(message, hash);
-  transformed = concat(MEDUSA_MAGIC8, transformed);
+  transformed = Buffer.concat([MEDUSA_MAGIC8, transformed]);
   // 整体逆序
   for (let i = 0, j = transformed.length - 1; i < j; i++, j--) {
     const t = transformed[i];
@@ -873,9 +922,9 @@ function buildMedusa(url, body, khronos, deviceId, version) {
     transformed[i] = (transformed[i] ^ seed[(~i) & 3]) & 0xff;
   }
   const check = (((querySm3[0] & 63) << 14) | 0x18000001 | ((queryBodyTs[0] & 63) << 8)) | 0;
-  const xmRand = rndInt32();
-  const packed = concat(Buffer.from([0x35]), le32(xmRand), le32(check), transformed,
-    Buffer.from([(random >> 16) & 255, (random >> 24) & 255]));
+  const xmRand = legacyRandomInt32();
+  const packed = Buffer.concat([Buffer.from([0x35]), le32(xmRand), le32(check), transformed,
+    Buffer.from([(random >> 16) & 255, (random >> 24) & 255])]);
   const encrypted = new AesV3(MEDUSA_AES_KEY, khronos).encrypt(packed, MEDUSA_AES_IV);
   const versionBytes = Crypto.unhex('03000000f7e85ffad7d7dc3bd62ac87057cf6118');
   const prefix = Buffer.alloc(20);
@@ -883,8 +932,8 @@ function buildMedusa(url, body, khronos, deviceId, version) {
     // JS: u32(version.readUInt32LE(i) ^ khronos) 后 writeUInt32LE
     putLe32(prefix, i, (readLe32(versionBytes, i) ^ (khronos | 0)));
   }
-  return b64(concat(prefix,
-    Buffer.from([random & 255, (random >> 8) & 255, 0, 1]), encrypted));
+  return Buffer.concat([prefix,
+    Buffer.from([random & 255, (random >> 8) & 255, 0, 1]), encrypted]).toString('base64');
 }
 
 /** helios：md5 ASCII 化 -> 64 位字表 -> 34 轮扩展 -> 分组类 Feistel。 */
@@ -892,9 +941,14 @@ function helios(khronos) {
   return heliosWith(khronos, rndInt32());
 }
 
-/** 可注入 random 的 helios（默认重载用 rndInt32()）。 */
-function heliosWith(khronos, random) {
-  const digest = md5(concat(le32(random), Buffer.from('8662', 'utf8')));
+/** v5 helios：与 v3 同算法，仅 license 换成 646637794（N3urda/hongguoTV V5）。 */
+function heliosV5(khronos) {
+  return heliosWith(khronos, rndInt32(), V5_LICENSE);
+}
+
+/** 可注入 random 与 license 的 helios（默认 license 为 v3 的 1588093228）。 */
+function heliosWith(khronos, random, license) {
+  const digest = md5(Buffer.concat([le32(random), Buffer.from('8662')]));
   const hex = digest.toString('hex');
   const ascii = Buffer.from(hex, 'ascii');
   const words = new Array(4);
@@ -916,8 +970,8 @@ function heliosWith(khronos, random) {
     b0 = x8;
     b8 = queue.shift();
   }
-  const text = String(khronos) + '-1588093228-8662';
-  const tb = Buffer.from(text, 'utf8');
+  const text = String(khronos) + '-' + (license || '1588093228') + '-8662';
+  const tb = Buffer.from(text);
   const padLen = Math.floor((tb.length + 1 + 15) / 16) * 16;
   const pad = Buffer.alloc(padLen);
   pad.fill((16 - (tb.length % 16)) & 0xff);
@@ -938,7 +992,185 @@ function heliosWith(khronos, random) {
     output.push(block);
   }
   const all = [le32(random), ...output];
-  return b64(concat(...all));
+  return Buffer.concat(all).toString('base64');
+}
+
+// ==================== v5 播放签名（Android v04.10.03 Medusa/Helios/Khronos） ====================
+
+/**
+ * v5 hashF13：iv 低 4 位固定等于 12（branch 0），ivV1 / chosen 为 v5 常量。
+ * 与 v3 主分支共用同一套 di 展开 / 主循环，仅参数与末尾校验位（|0x20）不同。
+ */
+function hashF13v5(querySm3, bodyMd5, tsBytes, khronos) {
+  const ivV1 = 0x9d4a97c2 | 0;
+  const countV1 = (ivV1 + khronos + 1) & 255;
+  const countV2 = (ivV1 + khronos) | 0;
+  const tt = new Array(HASH_TABLE.length);
+  for (let i = 0; i < tt.length; i++) tt[i] = ror(HASH_TABLE[i], countV1);
+  const n0 = (countV2 + 2) & 7;
+  const seed = [0xfa, 0x45, 0x61, 0xd7];
+  const pad = Buffer.alloc(seed.length);
+  for (let i = 0; i < seed.length; i++) pad[i] = ((seed[i] | (seed[i] << 8)) >> n0) & 255;
+  const data = Buffer.concat([querySm3, bodyMd5, tsBytes, pad,
+    Crypto.unhex('00000000000001a0')]);
+
+  const di = new Array((data.length / 4) + 112 + 16).fill(0);
+  let diLen = 0;
+  for (let i = 0; i + 3 < data.length; i += 4) di[diLen++] = readBe32(data, i);
+  let di0 = di[0];
+  for (let i = 0; i < 112; i++) {
+    const di1 = di[i + 1];
+    const di14 = di[i + 14];
+    const r1 = rotl(di1, 14) ^ rotl(di1, 25) ^ (di1 >>> 3);
+    const r2 = rotl(di14, 13) ^ rotl(di14, 15) ^ (di14 >>> 10);
+    di[diLen++] = (di0 + di[i + 9] + r1 + r2) | 0;
+    di0 = di1;
+  }
+
+  const initRaw = [0x7aba4fc8, 0x67166507, 0x6403fa00, 0x340f512f,
+    984304912, 3005047866, 2874125293, 2152413264];
+  const init = new Array(8);
+  for (let i = 0; i < 8; i++) init[i] = ror(initRaw[i], countV2 & 31);
+  const chosen = [96, 1, 3, 4, 0, 6, 5, 2, 0, 7, 7];
+  const d = init.slice();
+  for (let i = 0; i < chosen[0]; i++) {
+    const base = (ivV1 + i) | 0;
+    const n0v = di[base & 127];
+    const n1 = ((d[chosen[3]] ^ d[chosen[4]]) & d[chosen[1]]) ^ d[chosen[3]];
+    const n2 = rotl(d[chosen[1]], 26) ^ rotl(d[chosen[1]], 21) ^ rotl(d[chosen[1]], 7);
+    const n4 = (n0v + n1 + n2 + tt[base & 63] + d[chosen[5]]) | 0;
+    const n5 = rotl(d[chosen[2]], 30) ^ rotl(d[chosen[2]], 19) ^ rotl(d[chosen[2]], 10);
+    const n6 = (d[chosen[2]] & d[chosen[6]]) | ((d[chosen[2]] | d[chosen[6]]) & d[chosen[7]]);
+    const n7 = (n5 + n6) | 0;
+    const old = d[chosen[9]];
+    const last = d[d.length - 1];
+    for (let k = d.length - 1; k >= 1; k--) d[k] = d[k - 1];
+    d[0] = last;
+    d[chosen[10]] = (n7 + n4) | 0;
+    d[chosen[8]] = (old + n4) | 0;
+  }
+  const ret = Buffer.alloc(32);
+  for (let i = 0; i < 8; i++) putBe32(ret, i * 4, (d[i] + init[i]) | 0);
+  for (let i = 0; i < 16; i++) ret[i] = ret[i] ^ ret[i + 16];
+  return Buffer.concat([ret.subarray(0, 16),
+    le32((sumMd5(ret.subarray(0, 16)) | 0x20) | 0)]);
+}
+
+/**
+ * v5 x-medusa。移植自 N3urda/hongguoTV Signer.medusaV5（GPL-3.0-only）。
+ *
+ * @param {string} url 完整 URL（含 query，签名按 '?' 之后的原文计算）
+ * @param {Buffer|null} body 实际发送的 gzip 压缩体
+ * @param {number} khronos 秒级时间戳
+ * @param {object} who { device_id, version_name, channel, device_type, os_version }
+ */
+function medusaV5(url, body, khronos, who) {
+  const bodyMd5 = body != null && body.length > 0 ? md5(body) : Buffer.alloc(16);
+  const query = queryOf(url);
+  const querySm3 = sm3(Buffer.from(query));
+  const ts = le32(khronos | 0);
+  const f13 = hashF13v5(querySm3, bodyMd5, ts, khronos);
+
+  const version = who.version_name;
+  const deviceInfo = proto([
+    [1, 1, 'sint'], [2, 2, 'sint'], [3, '8662'], [4, who.device_id],
+    [5, PROCESS_NONCE], [6, '!noperm!'], [12, 'Asia/Shanghai,8'], [13, 'zh_CN'],
+    [22, who.os_version], [25, PROCESS_STARTED, 'sint'],
+    [30, who.device_type], [31, 'HONOR'], [32, who.device_type], [34, 'HONOR']]);
+  const env = proto([
+    [6, 'v04.10.03.04-bugfix'], [8, who.channel],
+    [12, deviceInfo, 'message'], [14, version]]);
+  const message = proto([
+    [1, V5_MAGIC, 'bytes'], [2, 5, 'sint'], [3, rndInt32(), 'sint'],
+    [4, '8662'], [5, who.device_id], [6, V5_LICENSE],
+    [7, version], [8, 'v04.10.03-ml-android'], [9, 0x040a0300, 'sint'],
+    [10, Buffer.alloc(8), 'bytes'], [12, khronos, 'sint'], [13, f13, 'bytes'],
+    [14, querySm3.subarray(0, 6), 'bytes'],
+    [15, proto([[1, 1, 'sint'], [2, 1, 'sint'], [3, 1, 'sint'], [5, 1, 'sint']]), 'message'],
+    [17, khronos, 'sint'], [20, 'none'], [21, 377, 'sint'], [23, env, 'message'],
+    [24, '{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}']]);
+
+  const nonce = rndInt32();
+  const hs = keyHash(V5_SIGN_KEY, nonce);
+  const hash = hs[0];
+  const seed = hs[1];
+  // transformed = (flags(8 零字节) + xmxor(message, hash)) 整体逆序，再逐字节异或 seed[~i & 3]
+  let transformed = xmxor(message, hash);
+  transformed = Buffer.concat([Buffer.alloc(8), transformed]);
+  for (let i = 0, j = transformed.length - 1; i < j; i++, j--) {
+    const t = transformed[i];
+    transformed[i] = transformed[j];
+    transformed[j] = t;
+  }
+  for (let i = 0; i < transformed.length; i++) {
+    transformed[i] = (transformed[i] ^ seed[(~i) & 3]) & 0xff;
+  }
+  const check = (((querySm3[0] & 63) << 14) | 0x18000001 | ((f13[0] & 63) << 8)) | 0;
+  const xmRand = rndInt32();
+  const packed = Buffer.concat([Buffer.from([0xca]), le32(xmRand), le32(check), transformed,
+    Buffer.from([(nonce >>> 16) & 255, (nonce >>> 24) & 255])]);
+  const encrypted = new AesV3(md5(V5_SIGN_KEY.subarray(0, 16)), khronos, true)
+    .encrypt(packed, md5(V5_SIGN_KEY.subarray(16, 32)));
+  const prefix = Buffer.concat([le32(5), V5_MAGIC]);
+  const tsLE = le32(khronos | 0);
+  for (let i = 0; i < prefix.length; i++) {
+    prefix[i] = (prefix[i] ^ tsLE[i & 3]) & 0xff;
+  }
+  return Buffer.concat([prefix,
+    Buffer.from([nonce & 255, (nonce >>> 8) & 255, 0, 1]), encrypted]).toString('base64');
+}
+
+/** v5 分支：iv 低 4 位等于 12 才算 branch 0（与 signPlayback 的选 ticket 逻辑一致）。 */
+function branchV5(queryStr, body, khronos) {
+  const bodyMd5 = body != null && body.length > 0 ? md5(body) : Buffer.alloc(16);
+  const q = sm3(Buffer.from(queryStr));
+  const iv = getIv(getIv(getIv(0x20230928, q), bodyMd5), le32(khronos | 0));
+  return ((iv & 15) === 12) ? 0 : 1;
+}
+
+/** v5 query 编码：与参考实现的 URLEncoder 兜底一致（只额外转 !'()）。 */
+function signV5Encode(value) {
+  return encodeURIComponent(String(value))
+    .replace(/[!'()]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+}
+
+function encodeV5Query(values) {
+  const parts = [];
+  for (const k of Object.keys(values)) {
+    parts.push(signV5Encode(k) + '=' + signV5Encode(String(values[k])));
+  }
+  return parts.join('&');
+}
+
+/**
+ * v5 播放签名：在 0..1023 内调整 _rticket 直到 branch 0，返回最终 URL 与签名头。
+ * 对应 N3urda/hongguoTV Signer.signPlayback（mobileV5=true）。
+ *
+ * @param {string} base 不含 query 的接口 URL
+ * @param {object} values 有序 query 参数（不含 _rticket，本函数内部追加并抖动）
+ * @param {Buffer|null} body gzip 压缩体
+ * @param {number} now 毫秒时间戳
+ * @returns {{url: string, headers: object}}
+ */
+function signPlaybackV5(base, values, body, now) {
+  const ts = Math.floor(now / 1000);
+  for (let offset = 0; offset <= 1023; offset++) {
+    const ticket = now + offset;
+    const query = encodeV5Query(Object.assign({}, values, { _rticket: String(ticket) }));
+    if (branchV5(query, body, ts) !== 0) continue;
+    const url = base + '?' + query;
+    const headers = {
+      'x-khronos': String(ts),
+      'x-helios': heliosV5(ts),
+      'x-medusa': medusaV5(url, body, ts, values),
+    };
+    if (body != null && body.length > 0) {
+      headers['Content-Type'] = 'application/json; charset=utf-8';
+      headers['x-ss-stub'] = md5(body).toString('hex').toUpperCase();
+    }
+    return { url, headers };
+  }
+  throw new Error('无法生成播放签名');
 }
 
 // ==================== 分支判定与入口 ====================
@@ -946,7 +1178,7 @@ function heliosWith(khronos, random) {
 /** 与 hashF13 相同的分支计算；branch==1 时服务端不认，调用方应抖动 _rticket 避开。 */
 function branchOf(url, body, khronos) {
   const bodyMd5 = body != null && body.length > 0 ? md5(body) : Buffer.alloc(16);
-  const q = sm3(Buffer.from(queryOf(url), 'utf8'));
+  const q = sm3(Buffer.from(queryOf(url)));
   const iv = getIv(getIv(getIv(0x20230928, q), bodyMd5), le32(khronos | 0));
   const low = iv & 15;
   return low - (((low * 171) >> 9) * 3);
@@ -973,8 +1205,8 @@ function sign(url, body, khronos) {
   const out = {};
   out['x-gorgon'] = xGorgon(query, body, ts, gorgonRandom);
   out['x-khronos'] = String(ts);
-  out['x-ladon'] = b64(be32(ts | 0));
-  out['x-argus'] = b64(le32(ts | 0));
+  out['x-ladon'] = be32(ts | 0).toString('base64');
+  out['x-argus'] = le32(ts | 0).toString('base64');
   out['x-helios'] = helios(ts);
   out['x-medusa'] = buildMedusa(url, body, ts,
     paramOf(query, 'device_id', '0'),
@@ -994,64 +1226,53 @@ function paramOf(query, key, fallback) {
   return fallback;
 }
 
-module.exports = { sign, branchOf, sm3 };
+/**
+ * 仅供自检：用 query/body 明文跑一次 hashF13，返回十六进制。
+ *
+ * hashF13 有三个分支（0/1/2），分支 0 的展开循环里有一处「上一轮值」的
+ * 状态推进，最容易被改错；给三个分支各留一组固定向量，退化时自检立刻报错。
+ */
+function hashF13Hex(queryText, bodyText, khronos) {
+  return hashF13(sm3(Buffer.from(queryText)), md5(Buffer.from(bodyText)),
+    le32(khronos), khronos).toString('hex');
+}
+
+module.exports = {sign,branchOf,signPlaybackV5};
 
 return module.exports;})();
-'use strict';
-/* Playback request compatibility adapted from qq294716498/HongguoTV-Phone-TV-NoAds
- * native/core/provider_hongguo_player_sign.go; GPL-3.0-or-later. */
-const PlayerSign=(()=>{
- const mask=(1n<<64n)-1n,rot=(x,n)=>{n=(n+64)%64;return ((x<<BigInt(n))|(x>>BigInt(64-n)))&mask};
- const md5=x=>crypto.createHash('md5').update(x).digest(),sm3=x=>PureSign.sm3(x);
- const pad=x=>{const n=16-x.length%16;return Buffer.concat([x,Buffer.alloc(n,n)])};
- const vi=n=>{n=BigInt(n);const a=[];while(n>127n){a.push(Number(n&127n)|128);n>>=7n}a.push(Number(n));return Buffer.from(a)};
- const field=(n,v)=>Buffer.concat([vi(n*8),vi(v)]),bytes=(n,v)=>{v=Buffer.isBuffer(v)?v:Buffer.from(v);return Buffer.concat([vi(n*8+2),vi(v.length),v])};
- function argus(query,body,ts,device,nonce){
-  const key=Buffer.from('ac1adaae95a7af94a5114ab3b3a97dd80050aa0a39314c40528caec95256c28c','hex');
-  const bh=sm3(body?md5(body):Buffer.alloc(16)),qh=sm3(Buffer.from(query));
-  const counters=Buffer.concat([field(1,1),field(2,1),field(3,1),field(7,3348294860)]);
-  const env=Buffer.concat([bytes(1,'25053RT47C'),bytes(2,'16'),bytes(3,'update_64'),field(4,2147483648)]);
-  const msg=Buffer.concat([field(1,0x20200929*2),field(2,2),field(3,nonce.readUInt32LE(6)&0x7fffffff),bytes(4,'8662'),bytes(5,device),bytes(6,'1611921764'),bytes(7,'7.3.5.32'),bytes(8,'v04.07.01-ml-android'),field(9,135135744),bytes(10,Buffer.alloc(8)),field(11,0),field(12,BigInt(ts)*2n),bytes(13,bh.subarray(0,6)),bytes(14,qh.subarray(0,6)),bytes(15,counters),bytes(16,''),bytes(20,'none'),field(21,738),bytes(23,env),field(25,2)]);
-  const data=pad(msg),derived=sm3(Buffer.concat([key,Buffer.from([0x3c,0xcc,0x56,0x7b]),key])),rounds=[];
-  for(let i=0;i<4;i++)rounds.push(derived.readBigUInt64LE(i*8));
-  for(let i=4;i<72;i++){let mixed=rot(rounds[i-1],-3)^rounds[i-3];mixed^=rot(mixed,-1);rounds.push(((~rounds[i-4])^mixed^((0x3dc94c3a046d678bn>>BigInt((i-4)%62))&1n)^3n)&mask)}
-  for(let off=0;off<data.length;off+=16){let l=data.readBigUInt64LE(off),r=data.readBigUInt64LE(off+8);for(const k of rounds)[l,r]=[r,(l^(rot(r,1)&rot(r,8))^rot(r,2)^k)&mask];data.writeBigUInt64LE(l,off);data.writeBigUInt64LE(r,off+8)}
-  const xor=Buffer.from([0xd0,0x4f,0xfd,0xff,0xd0,0x4f,0xfd,0xff]);for(let i=0;i<data.length;i++)data[i]^=xor[i%8];
-  const rev=Buffer.concat([xor,data]).reverse(),container=pad(Buffer.concat([Buffer.from([0xa6,0xe7,0x83,0xee,0x70,0x01,0x10,0x09,0x18]),rev,Buffer.from([0x56,0x7b])]));
-  const aes=crypto.createCipheriv('aes-128-cbc',md5(key.subarray(0,16)),md5(key.subarray(16)));aes.setAutoPadding(false);
-  return Buffer.concat([Buffer.from([0x3c,0xcc]),aes.update(container),aes.final()]).toString('base64');
- }
- function ladon(aid,ts,prefix){
-  const digest=Buffer.from(md5(Buffer.concat([prefix,Buffer.from(aid)])).toString('hex'));
-  let l=digest.readBigUInt64LE(0),r=digest.readBigUInt64LE(8),queue=[digest.readBigUInt64LE(16),digest.readBigUInt64LE(24)],keys=[];
-  for(let i=0;i<34;i++){keys.push(l);const mix=((rot(r,-8)+l)&mask)^BigInt(i);queue.push(mix);l=(mix^rot(l,3))&mask;r=queue.shift()}
-  const data=pad(Buffer.from(String(ts)+'-1611921764-'+aid));
-  for(let off=0;off<data.length;off+=16){l=data.readBigUInt64LE(off);r=data.readBigUInt64LE(off+8);for(const k of keys){r=(k^((l+rot(r,-8))&mask))&mask;l=(r^rot(l,3))&mask}data.writeBigUInt64LE(l,off);data.writeBigUInt64LE(r,off+8)}
-  return Buffer.concat([prefix,data]).toString('base64');
- }
- function sign(url,body,ts){
-  const u=new URL(url),query=u.search.slice(1),p=Buffer.alloc(20);md5(Buffer.from(query)).copy(p,0,0,4);if(body)md5(body).copy(p,4,0,4);Buffer.from([0,6,11,28]).copy(p,12);p.writeUInt32BE(ts,16);
-  const key=Buffer.from('44b9b9d9a4aef9fca493aa757ca3c2c4a496938f','hex');for(let i=0;i<20;i++)p[i]^=key[i];
-  const rev=x=>{let n=0;for(let j=0;j<8;j++)n=(n<<1)|((x>>j)&1);return n};
-  for(let i=0;i<20;i++){const x=(((p[i]<<4)|(p[i]>>4))&255)^p[(i+1)%20];p[i]=rev(x)^255^20}
-  const nonce=crypto.randomBytes(11);
-  return {'X-Khronos':String(ts),'X-Gorgon':Buffer.concat([Buffer.from([0x84,4,0x40,0x1c,0,0]),p]).toString('hex'),'X-Argus':argus(query,body,ts,u.searchParams.get('device_id')||'',nonce),'X-Ladon':ladon(u.searchParams.get('aid')||'8662',ts,nonce.subarray(2,6))};
- }
- return {sign};
-})();
 
 const REG_CONSTANTS=Buffer.from([77,212,194,230,184,49,98,9,14,82,179,199,166,115,59,164,28,178,70,43,130,154,181,138,25,107,57,219,87,23,117,36,244,155,175,127,8,232,214,141,38,167,46,55,193,169,90,47,31,5,165,24,146,174,242,148,151,50,182,42,56,170,221,88]);
-async function registerAnonymous(){
- const id=()=>crypto.randomBytes(16).toString('hex'),now=Date.now();
- const header={display_name:'红果免费短剧',aid:8662,channel:'69310258a',package:'com.phoenix.read',version_code:73932,app_version:'7.3.9.32',sdk_version:'3.7.0-rc.34-fanqie-xiaoshuo',sdk_target_version:29,git_hash:'3a88f4e',release_build:'b5e187f',os:'Android',os_version:'16',os_api:36,device_model:'25053RT47C',device_brand:'Redmi',device_manufacturer:'Xiaomi',cpu_abi:'arm64-v8a',density_dpi:520,display_density:'mdpi',resolution:'1280x2772',language:'zh',timezone:8,access:'wifi',carrier:'CHINA MOBILE',mcc_mnc:'46000',rom:'BP2A.250605.031.A3',rom_version:'release-keys',cdid:id(),sig_hash:'56a962410c494bbaf0b58dba20cae56f',openudid:crypto.randomBytes(8).toString('hex'),clientudid:id(),region:'CN',tz_name:'Asia/Shanghai',tz_offset:28800,sim_region:'cn',sim_serial_number:[],oaid_may_support:false,req_id:id(),device_platform:'android',custom:{account_region_src:'fallback',host_bit:64,account_region:'cn',dragon_device_type:'phone'},pre_installed_channel:'',apk_first_install_time:now,is_system_app:0,sdk_flavor:'china',guest_mode:0};
+async function registerAnonymous(signal){
+ const now=Date.now(),cdid=crypto.randomUUID();
+ const header = {
+   display_name: '红果免费短剧', update_version_code: 73932, manifest_version_code: 73932,
+   app_version_minor: '7.3.9.32', aid: 8662, channel: 'update_64', package: 'com.phoenix.read',
+   app_version: '7.3.9.32', version_code: 73932, sdk_version: '3.7.0-rc.34-fanqie-xiaoshuo',
+   sdk_target_version: 29, git_hash: '3a88f4e', os: 'Android', os_version: '16', os_api: 36,
+   device_model: '25053RT47C', device_brand: 'Redmi', device_manufacturer: 'Redmi',
+   cpu_abi: 'arm64-v8a', release_build: 'b5e187f', density_dpi: 520, display_density: 'mdpi',
+   resolution: '1280x2772', language: 'zh', timezone: 8, access: 'wifi', not_request_sender: 0,
+   carrier: 'CHINA MOBILE', mcc_mnc: '46000', rom: 'eng.root.20231116.160340',
+   rom_version: 'W528JS release-keys', cdid,
+   sig_hash: '56a962410c494bbaf0b58dba20cae56f', openudid: crypto.randomBytes(8).toString('hex'),
+   clientudid: crypto.randomUUID(), ipv6_list: [], region: 'CN', tz_name: 'Asia/Shanghai',
+   tz_offset: 28800, sim_region: 'cn', sim_serial_number: [], oaid_may_support: false,
+   req_id: crypto.randomUUID(), device_platform: 'android',
+   custom: { account_region_src: 'fallback', account_region: 'cn', host_bit: 64,
+     dragon_device_type: 'phone' },
+   pre_installed_channel: '',
+   apk_first_install_time: now, is_system_app: 0, sdk_flavor: 'china', guest_mode: 0,
+ };
  const raw=Buffer.from(JSON.stringify({magic_tag:'ss_app_log',header,_gen_time:now})),gz=zlib.gzipSync(raw),seed=crypto.randomBytes(32),sha=x=>crypto.createHash('sha512').update(x).digest(),km=sha(Buffer.concat([sha(seed),REG_CONSTANTS])),plain=Buffer.concat([sha(gz),gz]),cipher=crypto.createCipheriv('aes-128-cbc',km.subarray(0,16),km.subarray(16,32)),body=Buffer.concat([Buffer.from([0x74,0x63,0x05,0x10,0,0]),seed,cipher.update(plain),cipher.final()]);
  const url='https://log5-applog-lf.fqnovel.com/service/2/device_register/?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1';
- const r=await request(url,{method:'POST',body,headers:{'Content-Type':'application/octet-stream;tt-data=a','Log-Encode-Type':'gzip','X-SS-DP':'8662','X-SS-Req-Ticket':String(now),'X-Vc-Bdturing-Sdk-Version':'4.0.3.cn','Lc':'101','Sdk-Version':'2','Passport-Sdk-Version':'5051452','X-Neptune':'-8|50:51:59:30:40:47:49:39','X-SS-STUB':crypto.createHash('md5').update(body).digest('hex').toUpperCase(),'User-Agent':'com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)'},timeout:12000});
- const text=r.data.toString();if(!text)throw Error('anonymous registration returned empty response');
+ const r=await request(url,{method:'POST',body,headers:{'Content-Type':'application/octet-stream;tt-data=a','Log-Encode-Type':'gzip','X-SS-DP':'8662','X-SS-Req-Ticket':String(now),'X-Vc-Bdturing-Sdk-Version':'4.0.3.cn','Lc':'101','Sdk-Version':'2','Passport-Sdk-Version':'5051452','X-Neptune':'-8|50:51:59:30:40:47:49:39','X-SS-STUB':crypto.createHash('md5').update(body).digest('hex').toUpperCase(),'User-Agent':'com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)'},timeout:8000,followRedirect:false,signal});
+ checkPlaybackResponse(r,'匿名设备接口');
+ const text=r.data.toString();if(!text)throw Error('匿名设备接口未返回内容');
  const x=JSON.parse(text.replace(/("(?:device_id|install_id)"\s*:\s*)(\d{16,})/g,'$1"$2"'));
+ checkPlaybackCode(x,'匿名设备接口');
  const did=String(x.device_id_str||x.device_id||''),iid=String(x.install_id_str||x.install_id||'');
- if(!/^\d{10,24}$/.test(did)||!/^\d{10,24}$/.test(iid)||!Number(did)||!Number(iid))throw Error('anonymous registration did not issue valid device identity');
- return {device_id:did,install_id:iid};
+ if(!/^\d{10,24}$/.test(did)||!/^\d{10,24}$/.test(iid)||!Number(did)||!Number(iid))throw Error('匿名设备接口未返回有效身份');
+ return {device_id:did,install_id:iid,cdid};
 }
 
 
@@ -1059,16 +1280,18 @@ const BASE='https://hongguoduanju.com',PREFIX='/spider/hongguo_local/3';
 const WEB_UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126.0 Safari/537.36';
 const APP_UA='com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)';
 const agent=new https.Agent({keepAlive:true,maxSockets:8});
-let server,identityPromise=null,identityRecoveryAt=0;const pageCache=new Map(),mediaCache=new Map();
+let server,identityPromise=null;
+const pageCache=new Map(),mediaCache=new Map(),pendingMedia=new Map();
+let playbackLifetime,playbackQueue=Promise.resolve(),nextPlaybackAt=0,playbackRetryAt=0;
 function request(url,opts={},redirects=0){
  return new Promise((resolve,reject)=>{
   const u=new URL(url);if(!['https:','http:'].includes(u.protocol))return reject(Error('不支持的地址协议'));
   const mod=u.protocol==='https:'?https:http;
   const req=mod.request(u,{method:opts.method||'GET',agent:u.protocol==='https:'?agent:undefined,headers:{'User-Agent':WEB_UA,'Accept-Encoding':'gzip, deflate, br',...opts.headers}},res=>{
-   if([301,302,303,307,308].includes(res.statusCode)&&res.headers.location){res.resume();if(redirects>=3)return reject(Error('跳转过多'));return request(new URL(res.headers.location,u).href,opts,redirects+1).then(resolve,reject)}
+   if(opts.followRedirect!==false&&[301,302,303,307,308].includes(res.statusCode)&&res.headers.location){res.resume();if(redirects>=3)return reject(Error('跳转过多'));return request(new URL(res.headers.location,u).href,opts,redirects+1).then(resolve,reject)}
    const chunks=[];let size=0,limit=opts.limit||12*1024*1024;
    res.on('data',c=>{size+=c.length;if(size>limit){req.destroy(Error('响应超出限制'));return}chunks.push(c)});
-   res.on('error',reject);res.on('end',()=>{try{let data=Buffer.concat(chunks);const enc=res.headers['content-encoding'];if(enc==='gzip')data=zlib.gunzipSync(data);else if(enc==='br')data=zlib.brotliDecompressSync(data);else if(enc==='deflate')data=zlib.inflateSync(data);if(data.length>limit)return reject(Error('响应超出限制'));resolve({status:res.statusCode,headers:res.headers,data})}catch(e){reject(Error('响应解码失败'))}});
+   res.on('error',reject);res.on('end',()=>{try{let data=Buffer.concat(chunks);const enc=data.length&&res.headers['content-encoding'];if(enc==='gzip')data=zlib.gunzipSync(data);else if(enc==='br')data=zlib.brotliDecompressSync(data);else if(enc==='deflate')data=zlib.inflateSync(data);if(data.length>limit)return reject(Error('响应超出限制'));resolve({status:res.statusCode,headers:res.headers,data})}catch(e){reject(Error('响应解码失败'))}});
   });
   req.setTimeout(opts.timeout||15000,()=>req.destroy(Error('上游请求超时')));req.on('error',reject);
   if(opts.signal){if(opts.signal.aborted){req.destroy(Error('请求已取消'));return}const abort=()=>req.destroy(Error('请求已取消'));opts.signal.addEventListener('abort',abort,{once:true});req.on('close',()=>opts.signal.removeEventListener('abort',abort))}
@@ -1081,9 +1304,9 @@ async function api(path,payload,extra={},host='api5-normal-sinfonlineb.fqnovel.c
  const dev=await anonymousIdentity(),body=payload==null?null:Buffer.from(JSON.stringify(payload));
  const qs=new URLSearchParams({aid:'8662',app_name:'novelread',version_code:'73532',version_name:'7.3.5.32',manifest_version_code:'73532',update_version_code:'73532',channel:'update_64',device_platform:'android',os:'android',ssmix:'a',device_type:'25053RT47C',device_brand:'Redmi',language:'zh',os_api:'36',os_version:'16',resolution:'1280*2772',dpi:'520',ac:'wifi',device_id:dev.device_id,iid:dev.install_id,...extra});qs.sort();
  const ts=Math.floor(Date.now()/1000);qs.set('_rticket',String(Date.now()));let url;
- for(let n=0;n<24;n++){url='https://'+host+path+'?'+qs; if(path.startsWith('/reading/bookapi/video_tab/')||PureSign.branchOf(url,body,ts)!==1)break;qs.set('_rticket',String(Number(qs.get('_rticket'))+1))}
- const headers={'User-Agent':APP_UA,Accept:'application/json','Content-Type':'application/json; charset=utf-8','X-XS-From-Web':'0','Sdk-Version':'2','X-SS-Req-Ticket':qs.get('_rticket'),...(body?{'X-SS-STUB':crypto.createHash('md5').update(body).digest('hex').toUpperCase()}:{}),...((path==='/novel/player/video_model/v1/'||path.startsWith('/reading/bookapi/video_tab/'))?PlayerSign.sign(url,body,ts):PureSign.sign(url,body,ts))};
- for(let n=0,attempts=path.startsWith('/reading/bookapi/video_tab/')?1:3;n<attempts;n++){const r=await request(url,{method:body?'POST':'GET',headers,body,timeout:Math.min(12000,Number(options.timeout)||12000)});if(r.status!==200)throw Error('播放接口 HTTP '+r.status);if(r.data.length){const x=parseJSON(r.data.toString());if(Number(x.code||x.Code||0)!==0)throw Error('播放接口业务错误 '+(x.code||x.Code));return x}if(n<attempts-1)await new Promise(r=>setTimeout(r,300*(n+1)))}
+ for(let n=0;n<24;n++){url='https://'+host+path+'?'+qs; if(PureSign.branchOf(url,body,ts)!==1)break;qs.set('_rticket',String(Number(qs.get('_rticket'))+1))}
+ const headers={'User-Agent':APP_UA,Accept:'application/json','Content-Type':'application/json; charset=utf-8','X-XS-From-Web':'0','Sdk-Version':'2','X-SS-Req-Ticket':qs.get('_rticket'),...(body?{'X-SS-STUB':crypto.createHash('md5').update(body).digest('hex').toUpperCase()}:{}),...PureSign.sign(url,body,ts)};
+ for(let n=0,attempts=3;n<attempts;n++){const r=await request(url,{method:body?'POST':'GET',headers,body,timeout:Math.min(12000,Number(options.timeout)||12000)});if(r.status!==200)throw Error('播放接口 HTTP '+r.status);if(r.data.length){const x=parseJSON(r.data.toString());if(Number(x.code||x.Code||0)!==0)throw Error('播放接口业务错误 '+(x.code||x.Code));return x}if(n<attempts-1)await new Promise(r=>setTimeout(r,300*(n+1)))}
  throw Error('播放接口返回空内容，请稍后重试');
 }
 function routerData(html){let p=html.indexOf('_ROUTER_DATA');if(p<0)throw Error('官网页面结构已变化');p=html.indexOf('{',p);let depth=0,quote=false,escape=false;for(let i=p;i<html.length;i++){const c=html[i];if(quote){if(escape)escape=false;else if(c==='\\')escape=true;else if(c==='"')quote=false}else if(c==='"')quote=true;else if(c==='{')depth++;else if(c==='}'&&!--depth)return parseJSON(html.slice(p,i+1))}throw Error('官网页面内容不完整')}
@@ -1214,86 +1437,233 @@ function decodedMediaAddress(value,seed){
  }catch(e){return ''}
 }
 function compatibleMediaVariants(data){
- return Object.values(data?.video_list||{}).map(v=>{
+ return Object.values(data?.video_list||{}).filter(v=>v&&typeof v==='object').map(v=>{
   const meta=v.video_meta||{},enc=v.encrypt_info||{},spade=enc.spade_a||v.spade_a||'';
   const codec=String(meta.codec_type||v.codec_type||'').toLowerCase();
   const named=parseInt(meta.definition||v.definition||v.quality_desc||v.quality);
   const width=Number(meta.vwidth||v.vwidth||v.width),height=Number(meta.vheight||v.vheight||v.height);
   const quality=named||Math.min(width||Infinity,height||Infinity);
-  return {url:decodedMediaAddress(v.main_url,data.key_seed)||decodedMediaAddress(v.backup_url||v.backup_url_1,data.key_seed),spade,encrypted:!!enc.encrypt||!!spade,codec,quality:Number.isFinite(quality)?quality:0};
+  const backups=Array.isArray(v.backup_url_list)?v.backup_url_list:[];
+  const url=[v.main_url,v.backup_url,v.backup_url_1,...backups].map(value=>decodedMediaAddress(value,data.key_seed)).find(Boolean);
+  return {url,spade,encrypted:!!enc.encrypt||!!spade,codec,quality:Number.isFinite(quality)?quality:0};
  }).filter(v=>v.url&&!['bytevc2','bvc2'].includes(v.codec));
 }
-async function modelMediaVariants(model,deadline,quality=0){
- const direct=compatibleMediaVariants(model);if(direct.some(v=>!quality||v.quality<=quality))return direct;
- let fallback=model.fallback_api;
- if(typeof fallback==='string'&&fallback.trim().startsWith('{')){try{fallback=parseJSON(fallback).fallback_api}catch(e){fallback=''}}
- if(fallback&&typeof fallback==='object')fallback=Array.isArray(fallback)?fallback[0]:fallback.fallback_api;
- if(typeof fallback!=='string'||!fallback.startsWith('https://'))return [];
+function fallbackMediaAddress(value){
+ if(Array.isArray(value))return fallbackMediaAddress(value[0]);
+ if(value&&typeof value==='object')return fallbackMediaAddress(value.fallback_api);
+ if(typeof value!=='string')return '';
+ const text=value.trim();
+ if(text.startsWith('{')||text.startsWith('[')){
+  try{return fallbackMediaAddress(parseJSON(text))}catch(e){return ''}
+ }
+ return text;
+}
+
+async function modelMediaVariants(model,quality,signal){
+ const direct=compatibleMediaVariants(model);
+ const hasQuality=rows=>rows.some(v=>!quality||(v.quality>0&&v.quality<=quality));
+ if(hasQuality(direct))return direct;
+ const fallback=fallbackMediaAddress(model.fallback_api);
+ if(!fallback.startsWith('https://'))return [];
  const original=new URL(fallback);
  if(!['snssdk.com','fqnovel.com','bytedance.com','bytecdn.cn','volcvideo.com'].some(host=>original.hostname===host||original.hostname.endsWith('.'+host)))throw Error('媒体信息地址不受支持');
- // Negotiate decoder capabilities on the official media endpoint. Keep its
- // issued authorization and video ID; do not force a ByteVC2-only file set.
- for(const codec of ['1','0']){
-  if(Date.now()>=deadline)break;
-  const u=new URL(original.href);u.searchParams.set('codec_type',codec);u.searchParams.delete('force_fids');u.searchParams.delete('encode_user_tag');
-  const r=await request(u.href,{headers:{'User-Agent':APP_UA,Referer:'https://novel.snssdk.com/'},timeout:Math.max(1,Math.min(5000,deadline-Date.now()))});
-  if(r.status!==200)throw Error('媒体信息接口 HTTP '+r.status);
-  const response=parseJSON(r.data.toString()),code=Number(response.code??response.Code??0);
-  if(code!==0)throw Error('媒体信息接口业务错误 '+code);
+ // Models with no inline media use the URL provided by the platform first.
+ // Keep 1.0.5's codec negotiation for models without a compatible stream.
+ const codecs=Object.keys(model.video_list||{}).length?['1','0']:[null,'1','0'];
+ for(const codec of codecs){
+  const u=new URL(original.href);
+  if(codec!==null){
+   u.searchParams.set('codec_type',codec);
+   u.searchParams.delete('force_fids');
+   u.searchParams.delete('encode_user_tag');
+  }
+  const r=await request(u.href,{headers:{'User-Agent':APP_UA,Referer:'https://novel.snssdk.com/'},timeout:5000,signal});
+  checkPlaybackResponse(r,'媒体信息接口');
+  if(!r.data.toString().trim())continue;
+  const response=parseJSON(r.data.toString());
+  checkPlaybackCode(response,'媒体信息接口');
+  checkPlaybackCode(response.video_info,'媒体信息接口');
   const info=response.video_info?.data;
   if(!info)continue;
   if(model.video_id&&info.video_id&&String(model.video_id)!==String(info.video_id))throw Error('媒体信息与本集不匹配');
-  const rows=compatibleMediaVariants(info);if(rows.some(v=>!quality||v.quality<=quality))return rows;
+  const rows=compatibleMediaVariants(info);
+  if(hasQuality(rows))return rows;
  }
  return [];
 }
 
-async function resolveMediaAttempt(vid,quality,deadline=Date.now()+22000){
- const params={video_id:vid,video_id_type:'0',need_all_video_definition:'1',need_mp4_align:'0',use_os_player:'0',video_platform:'1024',source:'0',from_video_id:''};
- const plans=[['api5-normal-sinfonlineb.fqnovel.com','1'],['reading.snssdk.com','1'],['api5-normal-sinfonlineb.fqnovel.com','3'],['reading.snssdk.com','3'],['api5-normal-sinfonlineb.fqnovel.com','1',true],['reading.snssdk.com','1',true]];
- let lastError;
- for(const [host,level,single] of plans){
-  if(Date.now()>=deadline)break;
-  try{
-   const path=single?'/reading/bookapi/video_tab/video_model/v1/':'/reading/bookapi/video_tab/multi_video_model/v1/',extra=single?{video_id:vid,need_all_video_definition:'1'}:{...params,device_level:level};
-   const result=await api(path,null,extra,host,{timeout:Math.max(1,Math.min(5000,deadline-Date.now()))}),data=result.data||{},entry=data.video_model_data?.[vid]||data[vid]||data,raw=entry.video_model;
-   let model=raw;if(typeof raw==='string'){try{model=JSON.parse(raw)}catch(e){model=JSON.parse(Buffer.from(raw,'base64').toString())}}if(!model&&entry.video_list)model=entry;
-   if(!model||!Object.keys(model.video_list||{}).length)throw Error('播放接口未返回本集可用视频');
-   let rows=await modelMediaVariants(model,deadline,quality);
-   rows.sort((a,b)=>b.quality-a.quality);if(quality)rows=rows.filter(v=>v.quality<=quality);
-   if(!rows.length)throw Error('本集暂未返回兼容的所选画质');
-   const selected=rows[0];if(selected.encrypted&&!selected.spade)throw Error('未返回媒体密钥');
-   return {...selected,key:selected.spade?contentKey(selected.spade):null};
-  }catch(e){lastError=e;if(!/空内容|上游请求超时|HTTP 5|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket|未返回本集可用视频|暂未返回兼容/.test(String(e.message)))throw e}
+const PLAYER_API='https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1';
+const VIDEO_TAB_API='https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/';
+const V5_PLAYER_UA = 'com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; '
+  + 'PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)';
+const VIDEO_TAB_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; '
+  + 'Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 '
+  + 'QuicVersion:c67e9834 2025-09-08)';
+
+const V5_PLAYER_DEVICE = {
+  aid: '8662',
+  app_name: 'novelread',
+  version_code: '74332',
+  version_name: '7.4.3.32',
+  channel: 'vivo_8662_64',
+  device_platform: 'android',
+  device_type: 'PGT-AN10',
+  os_version: '12',
+  update_version_code: '74332',
+};
+
+const VIDEO_TAB_DEVICE = {
+  ac: 'wifi',
+  channel: 'update_64',
+  aid: '8662',
+  app_name: 'novelread',
+  version_code: '73932',
+  version_name: '7.3.9.32',
+  device_platform: 'android',
+  os: 'android',
+  ssmix: 'a',
+  device_type: '25053RT47C',
+  device_brand: 'Redmi',
+  language: 'zh',
+  os_api: '36',
+  os_version: '16',
+  manifest_version_code: '73932',
+  resolution: '1280*2772',
+  dpi: '520',
+  update_version_code: '73932',
+  host_abi: 'arm64-v8a',
+  dragon_device_type: 'phone',
+  pv_player: '73932',
+  compliance_status: '0',
+  need_personal_recommend: '1',
+  player_so_load: '1',
+  is_android_pad_screen: '0',
+};
+
+function checkPlaybackResponse(response,endpoint){
+ const retryAfter=response.headers['retry-after'];
+ if(response.status===429||retryAfter){
+  const seconds=Number(retryAfter);
+  const time=retryAfter?(Number.isFinite(seconds)?Date.now()+1000*seconds:Date.parse(retryAfter)):NaN;
+  playbackRetryAt=Number.isFinite(time)&&time>Date.now()?time:Date.now()+60000;
+  throw Error(endpoint+'请求受限，请稍后重试');
  }
- throw lastError||Error('播放接口暂不可用');
-}
-async function resolveMedia(vid,quality){
- const deadline=Date.now()+22000;await anonymousIdentity();const observed=identityPromise;
- try{return await resolveMediaAttempt(vid,quality,deadline)}catch(error){
-  // One bounded anonymous-session recovery; never retry auth failures or rate limits.
-  if(!/空内容|暂未返回兼容/.test(String(error.message))||deadline-Date.now()<13000)throw error;
-  if(identityPromise===observed){
-   if(Date.now()-identityRecoveryAt<60000)throw error;
-   identityRecoveryAt=Date.now();identityPromise=null;
-  }
-  await anonymousIdentity();await new Promise(r=>setTimeout(r,750));
-  return await resolveMediaAttempt(vid,quality,deadline);
- }
+ if(response.status!==200)throw Error(endpoint+' HTTP '+response.status);
 }
 
-async function play(body){const m=String(body.id||'').match(/^(\d{10,24}):(\d{10,24})\|(0|480|720)$/);if(!m)throw Error('分集编号无效');const cacheKey=m[2]+'|'+m[3];let item=mediaCache.get(cacheKey);if(!item||Date.now()-item.created>1200000){const media=await resolveMedia(m[2],Number(m[3]));item={...media,created:Date.now(),id:crypto.randomBytes(12).toString('hex'),ready:false};await prepare(item);if(mediaCache.size>=8)mediaCache.delete(mediaCache.keys().next().value);mediaCache.set(cacheKey,item)}const address=server.address();return {parse:0,url:'http://127.0.0.1:'+address.port+PREFIX+'/video/'+item.id+'.mp4',header:{'User-Agent':'JSTV-Hongguo/1.0'},format:'video/mp4'}}
+function checkPlaybackCode(data,endpoint){
+ const code=[data?.code,data?.Code].map(value=>Number(value??0)).find(value=>value!==0);
+ if(code!==undefined)throw Error(endpoint+'业务错误 '+code);
+}
+
+function modelForEpisode(text,vid){
+ const result=parseJSON(text);
+ checkPlaybackCode(result,'播放接口');
+ const data=result?.data;
+ const rows=data?.['1004']??data?.video_model_data??data;
+ const entry=rows&&Object.prototype.hasOwnProperty.call(rows,vid)?rows[vid]:null;
+ let model=entry?.video_model;
+ if(typeof model==='string'){
+  try{model=parseJSON(model)}catch(e){model=parseJSON(Buffer.from(model,'base64').toString())}
+ }
+ if(!model||typeof model!=='object'||(!model.video_list&&!model.fallback_api))throw Error('播放接口未返回本集可用视频');
+ return model;
+}
+
+async function requestPlaybackModel(vid,signal){
+ const registration=await registerAnonymous(signal);
+ const device={iid:registration.install_id,cdid:registration.cdid,device_id:registration.device_id};
+ const body=zlib.gzipSync(Buffer.from(JSON.stringify({
+  biz_param:{
+   detail_page_version:0,device_level:1,disable_digg_stat:false,disable_video_relate_book:false,
+   need_all_video_definition:true,need_mp4_align:false,use_os_player:false,use_server_dns:false,video_platform:1024,
+  },
+  mixed_video_id_map:{'1004':[vid]},
+  dr_scene:'player',
+ })));
+ const primary=PureSign.signPlaybackV5(PLAYER_API,{...V5_PLAYER_DEVICE,...device},body,Date.now());
+ const result=await request(primary.url,{
+  method:'POST',body,followRedirect:false,timeout:7000,signal,
+  headers:{'User-Agent':V5_PLAYER_UA,Accept:'application/json','Content-Encoding':'gzip','Content-Length':String(body.length),...primary.headers},
+ });
+ checkPlaybackResponse(result,'播放接口');
+ const text=result.data.toString();
+ if(text.trim())return modelForEpisode(text,vid);
+
+ // A successful response with no body gets one retry on the video-tab API.
+ const tab=PureSign.signPlaybackV5(VIDEO_TAB_API,{
+  ...VIDEO_TAB_DEVICE,...device,video_id:vid,video_id_type:'0',device_level:'1',
+  need_all_video_definition:'1',need_mp4_align:'0',use_os_player:'0',video_platform:'1024',source:'0',from_video_id:'',
+ },null,Date.now());
+ const recovered=await request(tab.url,{
+  followRedirect:false,timeout:7000,signal,
+  headers:{'User-Agent':VIDEO_TAB_UA,'Accept-Language':'zh-CN,zh;q=0.9',...tab.headers},
+ });
+ checkPlaybackResponse(recovered,'备用播放接口');
+ const retryText=recovered.data.toString();
+ if(!retryText.trim())throw Error('红果播放接口暂未返回内容，请稍后重试');
+ return modelForEpisode(retryText,vid);
+}
+
+function resolveMedia(vid,quality,lifetime){
+ const pending=playbackQueue.then(async()=>{
+  if(lifetime.aborted)throw Error('播放请求已取消');
+  if(Date.now()<playbackRetryAt)throw Error('红果播放接口请求受限，请稍后重试');
+  const wait=nextPlaybackAt-Date.now();
+  if(wait>0)await new Promise(resolve=>setTimeout(resolve,wait));
+  const signal=AbortSignal.any([lifetime,AbortSignal.timeout(22000)]);
+  try{
+   const model=await requestPlaybackModel(vid,signal);
+   const rows=await modelMediaVariants(model,quality,signal);
+   const selected=rows.filter(v=>!quality||(v.quality>0&&v.quality<=quality)).sort((a,b)=>b.quality-a.quality)[0];
+   if(!selected)throw Error('本集暂未返回兼容的所选画质');
+   if(selected.encrypted&&!selected.spade)throw Error('未返回媒体密钥');
+   return {...selected,key:selected.spade?contentKey(selected.spade):null};
+  }finally{if(!lifetime.aborted)nextPlaybackAt=Date.now()+1000}
+ });
+ playbackQueue=pending.catch(()=>{});
+ return pending;
+}
+
+async function preparePlayback(vid,quality,cacheKey){
+ const lifetime=playbackLifetime.signal;
+ const media=await resolveMedia(vid,quality,lifetime);
+ const item={...media,created:Date.now(),id:crypto.randomBytes(12).toString('hex'),ready:false};
+ await prepare(item,lifetime);
+ if(lifetime.aborted)throw Error('播放请求已取消');
+ if(mediaCache.size>=8)mediaCache.delete(mediaCache.keys().next().value);
+ mediaCache.set(cacheKey,item);
+ return item;
+}
+
+async function play(body){
+ const m=String(body.id||'').match(/^(\d{10,24}):(\d{10,24})\|(0|480|720)$/);
+ if(!m)throw Error('分集编号无效');
+ const [, ,vid,quality]=m,cacheKey=vid+'|'+quality;
+ let item=mediaCache.get(cacheKey);
+ if(!item||Date.now()-item.created>1200000){
+  if(!pendingMedia.has(cacheKey)){
+   const pending=preparePlayback(vid,Number(quality),cacheKey).finally(()=>{
+    if(pendingMedia.get(cacheKey)===pending)pendingMedia.delete(cacheKey);
+   });
+   pendingMedia.set(cacheKey,pending);
+  }
+  item=await pendingMedia.get(cacheKey);
+ }
+ const address=server.address();
+ return {parse:0,url:'http://127.0.0.1:'+address.port+PREFIX+'/video/'+item.id+'.mp4',header:{'User-Agent':'JSTV-Hongguo/1.0'},format:'video/mp4'};
+}
 function boxes(b,start=0,end=b.length){const out=[];for(let p=start;p+8<=end;){let size=b.readUInt32BE(p),head=8;const type=b.toString('ascii',p+4,p+8);if(size===1){if(p+16>end)break;size=Number(b.readBigUInt64BE(p+8));head=16}else if(!size)size=end-p;if(size<head||p+size>end)break;out.push({type,start:p,data:p+head,end:p+size,size});p+=size}return out}
 function child(b,box,type){return boxes(b,box.data,box.end).find(x=>x.type===type)}
 async function range(url,start,end,signal){const r=await request(url,{headers:{Range:'bytes='+start+'-'+end,Referer:'https://novel.snssdk.com/','User-Agent':APP_UA,'Accept-Encoding':'identity'},timeout:15000,signal,limit:Math.max(end-start+1,512*1024)+1024});if(r.status!==206)throw Error('视频 CDN 未返回分段数据 ('+r.status+')');if(r.data.length!==end-start+1)throw Error('视频 CDN 分段长度异常');return r}
 function indexTrack(head,track){const mdia=child(head,track,'mdia'),minf=mdia&&child(head,mdia,'minf'),stbl=minf&&child(head,minf,'stbl');if(!stbl)return [];const sz=child(head,stbl,'stsz'),co=child(head,stbl,'stco')||child(head,stbl,'co64'),sc=child(head,stbl,'stsc'),iz=child(head,stbl,'saiz'),io=child(head,stbl,'saio');if(!sz||!co||!sc||!iz||!io)return [];const count=head.readUInt32BE(sz.data+8),fixed=head.readUInt32BE(sz.data+4),sizes=Array.from({length:count},(_,i)=>fixed||head.readUInt32BE(sz.data+12+i*4));const nco=head.readUInt32BE(co.data+4),offsets=Array.from({length:nco},(_,i)=>co.type==='co64'?Number(head.readBigUInt64BE(co.data+8+i*8)):head.readUInt32BE(co.data+8+i*4)),nsc=head.readUInt32BE(sc.data+4),chunks=Array.from({length:nsc},(_,i)=>({first:head.readUInt32BE(sc.data+8+i*12),samples:head.readUInt32BE(sc.data+12+i*12)}));const flags=head.readUInt32BE(iz.data)&0xffffff,izStart=iz.data+4+(flags&1?8:0),auxDefault=head[izStart],auxCount=head.readUInt32BE(izStart+1);const ioFlags=head.readUInt32BE(io.data)&0xffffff,ioStart=io.data+4+(ioFlags&1?8:0),auxOffset=head[io.data]===1?Number(head.readBigUInt64BE(ioStart+4)):head.readUInt32BE(ioStart+4);if(auxCount!==count)throw Error('MP4 加密采样数量不一致');let sample=0,aux=auxOffset,scIndex=0;const rows=[];for(let ci=0;ci<offsets.length;ci++){while(scIndex+1<chunks.length&&chunks[scIndex+1].first<=ci+1)scIndex++;let pos=offsets[ci];for(let j=0;j<chunks[scIndex].samples&&sample<count;j++,sample++){const auxSize=auxDefault||head[izStart+5+sample];if(auxSize!==8&&auxSize!==16)throw Error('暂不支持此 MP4 子采样加密格式');if(aux+auxSize>head.length)throw Error('MP4 加密索引不在文件头');const iv=Buffer.alloc(16);head.copy(iv,0,aux,aux+auxSize);rows.push({start:pos,end:pos+sizes[sample],iv});pos+=sizes[sample];aux+=auxSize}}if(sample!==count)throw Error('MP4 采样索引不完整');return rows}
 function replaceTags(head,from,to){const a=Buffer.from(from),b=Buffer.from(to);for(let p=0;(p=head.indexOf(a,p))>=0;p+=4)b.copy(head,p)}
-async function prepare(item){const first=await request(item.url,{headers:{Range:'bytes=0-262143',Referer:'https://novel.snssdk.com/','User-Agent':APP_UA,'Accept-Encoding':'identity'},timeout:15000,limit:512*1024});if(first.status!==206)throw Error('视频 CDN 暂不可用 ('+first.status+')');const total=Number(String(first.headers['content-range']||'').split('/')[1]);if(!total)throw Error('未取得视频长度');let data=first.data;let moov;for(let p=0;p+8<=data.length;){const size=data.readUInt32BE(p),type=data.toString('ascii',p+4,p+8);if(size<8||p+size>8*1024*1024)throw Error('MP4 文件头不兼容');if(type==='moov'){if(p+size>data.length)data=Buffer.concat([data,(await range(item.url,data.length,p+size-1)).data]);moov={start:p,data:p+8,end:p+size};break}p+=size}if(!moov)throw Error('未找到 MP4 视频索引');item.head=Buffer.from(data.subarray(0,moov.end));item.total=total;item.samples=[];if(item.key){for(const trak of boxes(item.head,moov.data,moov.end).filter(x=>x.type==='trak'))item.samples.push(...indexTrack(item.head,trak));if(!item.samples.length)throw Error('未找到加密采样索引');item.samples.sort((a,b)=>a.start-b.start);replaceTags(item.head,'encv',item.codec==='h264'||item.codec==='avc1'?'avc1':'hvc1');replaceTags(item.head,'enca','mp4a');for(let p=0;(p=item.head.indexOf(Buffer.from('sinf'),p))>=0;p+=4)item.head.write('free',p)}item.ready=true;return item}
+async function prepare(item,signal){const first=await request(item.url,{headers:{Range:'bytes=0-262143',Referer:'https://novel.snssdk.com/','User-Agent':APP_UA,'Accept-Encoding':'identity'},timeout:15000,limit:512*1024,signal});if(first.status!==206)throw Error('视频 CDN 暂不可用 ('+first.status+')');const total=Number(String(first.headers['content-range']||'').split('/')[1]);if(!total)throw Error('未取得视频长度');let data=first.data;let moov;for(let p=0;p+8<=data.length;){const size=data.readUInt32BE(p),type=data.toString('ascii',p+4,p+8);if(size<8||p+size>8*1024*1024)throw Error('MP4 文件头不兼容');if(type==='moov'){if(p+size>data.length)data=Buffer.concat([data,(await range(item.url,data.length,p+size-1,signal)).data]);moov={start:p,data:p+8,end:p+size};break}p+=size}if(!moov)throw Error('未找到 MP4 视频索引');item.head=Buffer.from(data.subarray(0,moov.end));item.total=total;item.samples=[];if(item.key){for(const trak of boxes(item.head,moov.data,moov.end).filter(x=>x.type==='trak'))item.samples.push(...indexTrack(item.head,trak));if(!item.samples.length)throw Error('未找到加密采样索引');item.samples.sort((a,b)=>a.start-b.start);replaceTags(item.head,'encv',item.codec==='h264'||item.codec==='avc1'?'avc1':'hvc1');replaceTags(item.head,'enca','mp4a');for(let p=0;(p=item.head.indexOf(Buffer.from('sinf'),p))>=0;p+=4)item.head.write('free',p)}item.ready=true;return item}
 function transform(item,start,data){const out=Buffer.from(data),end=start+out.length;if(start<item.head.length)item.head.copy(out,0,start,Math.min(end,item.head.length));if(!item.key)return out;let low=0,high=item.samples.length;while(low<high){const mid=(low+high)>>1;if(item.samples[mid].start<=start)low=mid+1;else high=mid}for(let i=Math.max(0,low-1);i<item.samples.length;i++){const sample=item.samples[i];if(sample.start>=end)break;const a=Math.max(start,sample.start),b=Math.min(end,sample.end);if(a>=b)continue;const offset=a-sample.start,blocks=Math.floor(offset/16),skip=offset%16,counter=(BigInt('0x'+sample.iv.toString('hex'))+BigInt(blocks))&((1n<<128n)-1n),iv=Buffer.from(counter.toString(16).padStart(32,'0'),'hex'),dec=crypto.createDecipheriv('aes-128-ctr',item.key,iv);if(skip)dec.update(Buffer.alloc(skip));Buffer.concat([dec.update(out.subarray(a-start,b-start)),dec.final()]).copy(out,a-start)}return out}
 async function serveVideo(req,res,id){const item=[...mediaCache.values()].find(x=>x.id===id);if(!item){res.writeHead(410);res.end();return}let start=0,end=item.total-1;const header=req.headers.range;if(header){const m=header.match(/^bytes=(\d*)-(\d*)$/);if(!m){res.writeHead(416,{'Content-Range':'bytes */'+item.total});res.end();return}if(!m[1]){start=Math.max(0,item.total-Number(m[2]));}else {start=Number(m[1]);if(m[2])end=Math.min(end,Number(m[2]));}if(!Number.isSafeInteger(start)||start<0||start>end||start>=item.total){res.writeHead(416,{'Content-Range':'bytes */'+item.total});res.end();return}}const headers={'Content-Type':'video/mp4','Content-Length':end-start+1,'Accept-Ranges':'bytes','Cache-Control':'no-store'};if(header)headers['Content-Range']='bytes '+start+'-'+end+'/'+item.total;res.writeHead(header?206:200,headers);if(req.method==='HEAD'){res.end();return}const controller=new AbortController();res.once('close',()=>controller.abort());try{for(let pos=start;pos<=end&&!res.destroyed;){const last=Math.min(end,pos+512*1024-1);let buf;if(last<item.head.length)buf=item.head.subarray(pos,last+1);else buf=transform(item,pos,(await range(item.url,pos,last,controller.signal)).data);if(!res.write(buf))await new Promise(resolve=>{const done=()=>{res.removeListener('drain',done);res.removeListener('close',done);resolve()};res.once('drain',done);res.once('close',done)});pos=last+1}if(!res.destroyed)res.end()}catch(e){if(!res.destroyed)res.destroy()}}
 function send(res,data,status=200){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data))}
 function config(){return {video:{sites:[{key:'nodejs_hongguo_local',name:'红果短剧·独立版',type:3,api:PREFIX,searchable:1,quickSearch:1,filterable:1}]},read:{sites:[]},comic:{sites:[]},music:{sites:[]},pan:{sites:[]},color:[]}}
-async function handler(req,res){try{const path=new URL(req.url,'http://127.0.0.1').pathname;if(req.method==='OPTIONS'){res.writeHead(204);res.end();return}if(path==='/config'||path==='/full-config')return send(res,config());if(path==='/check')return send(res,{run:true});if(path==='/website'||path==='/website/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<!doctype html><meta charset="utf-8"><title>红果短剧独立源</title><h1>红果短剧·独立版</h1><p>1.0.5 · 2026-11-16</p><p>无需账号登录。匿名设备身份与临时播放信息只留在内存中。</p><p>在 JSTV「我的扩展」选择本源即可搜索和观看。</p>');return}const video=path.match(new RegExp('^'+PREFIX+'/video/([a-f0-9]{24})\\.mp4$'));if(video&&['GET','HEAD'].includes(req.method))return await serveVideo(req,res,video[1]);if(req.method!=='POST'||!path.startsWith(PREFIX+'/'))return send(res,{error:'Not Found'},404);const chunks=[];let size=0;for await(const b of req){size+=b.length;if(size>65536)return send(res,{error:'请求过大'},413);chunks.push(b)}const body=parseJSON(Buffer.concat(chunks).toString()||'{}'),action=path.slice(PREFIX.length+1),actions={init:async()=>({}),home,category,search,detail,play};if(!actions[action])return send(res,{error:'Not Found'},404);send(res,await actions[action](body))}catch(e){if(!res.headersSent)send(res,{error:String(e.message||'源请求失败'),message:String(e.message||'源请求失败'),list:[]},502);else res.destroy()}}
-async function start(options={}){if(server)await stop();server=typeof globalThis.catServerFactory==='function'?globalThis.catServerFactory(handler):http.createServer(handler);const port=Number(options.port)||9988;await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve)});return server}
-async function stop(){if(server){const old=server;server=null;if(typeof old.closeAllConnections==='function')old.closeAllConnections();await new Promise(r=>old.close(r))}agent.destroy();mediaCache.clear();pageCache.clear();searchCursors.clear();identityPromise=null;identityRecoveryAt=0}
+async function handler(req,res){try{const path=new URL(req.url,'http://127.0.0.1').pathname;if(req.method==='OPTIONS'){res.writeHead(204);res.end();return}if(path==='/config'||path==='/full-config')return send(res,config());if(path==='/check')return send(res,{run:true});if(path==='/website'||path==='/website/'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});res.end('<!doctype html><meta charset="utf-8"><title>红果短剧独立源</title><h1>红果短剧·独立版</h1><p>1.0.6 · 2026-11-20</p><p>无需账号登录。匿名设备身份与临时播放信息只留在内存中。</p><p>在 JSTV「我的扩展」选择本源即可搜索和观看。</p>');return}const video=path.match(new RegExp('^'+PREFIX+'/video/([a-f0-9]{24})\\.mp4$'));if(video&&['GET','HEAD'].includes(req.method))return await serveVideo(req,res,video[1]);if(req.method!=='POST'||!path.startsWith(PREFIX+'/'))return send(res,{error:'Not Found'},404);const chunks=[];let size=0;for await(const b of req){size+=b.length;if(size>65536)return send(res,{error:'请求过大'},413);chunks.push(b)}const body=parseJSON(Buffer.concat(chunks).toString()||'{}'),action=path.slice(PREFIX.length+1),actions={init:async()=>({}),home,category,search,detail,play};if(!actions[action])return send(res,{error:'Not Found'},404);send(res,await actions[action](body))}catch(e){if(!res.headersSent)send(res,{error:String(e.message||'源请求失败'),message:String(e.message||'源请求失败'),list:[]},502);else res.destroy()}}
+async function start(options={}){if(server)await stop();playbackLifetime=new AbortController();server=typeof globalThis.catServerFactory==='function'?globalThis.catServerFactory(handler):http.createServer(handler);const port=Number(options.port)||9988;await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve)});return server}
+async function stop(){playbackLifetime?.abort();if(server){const old=server;server=null;if(typeof old.closeAllConnections==='function')old.closeAllConnections();await new Promise(r=>old.close(r))}agent.destroy();mediaCache.clear();pageCache.clear();searchCursors.clear();identityPromise=null;pendingMedia.clear();playbackQueue=Promise.resolve();nextPlaybackAt=0;playbackRetryAt=0}
 module.exports={start,stop,getServer:()=>server};
